@@ -8,7 +8,38 @@
       </div>
       
       <div class="logs-container">
-        <pre v-if="logs" class="logs-content">{{ logs }}</pre>
+        <div v-if="logs.length > 0" class="logs-list">
+          <div 
+            v-for="log in logs" 
+            :key="log.id" 
+            class="log-item"
+            :class="{'log-success': log.status === 'success', 'log-failed': log.status === 'failed'}"
+          >
+            <div class="log-header">
+              <div class="log-meta">
+                <span class="log-node">{{ log.nodeName }}</span>
+                <span class="log-operation">{{ log.operation }}</span>
+                <span class="log-status" :class="log.status">{{ log.status }}</span>
+                <span class="log-time">{{ formatDate(log.createdAt) }}</span>
+              </div>
+              <button 
+                class="log-toggle" 
+                @click="toggleLogDetail(log.id)"
+              >
+                {{ expandedLogs.includes(log.id) ? '收起' : '展开' }}
+              </button>
+            </div>
+            <div class="log-content">
+              <div class="log-command">{{ log.command }}</div>
+              <div 
+                v-if="expandedLogs.includes(log.id)" 
+                class="log-output"
+              >
+                <pre>{{ log.output }}</pre>
+              </div>
+            </div>
+          </div>
+        </div>
         <div v-else class="empty-logs">
           <div class="empty-icon"></div>
           <p>暂无部署日志</p>
@@ -24,12 +55,13 @@ import axios from 'axios'
 
 // API 配置
 const apiClient = axios.create({
-  baseURL: 'http://localhost:8080/api',
+  baseURL: 'http://localhost:8080',
   timeout: 60000 // 60秒超时
 })
 
 // 状态变量
-const logs = ref('')
+const logs = ref([])
+const expandedLogs = ref([])
 
 // 定义组件的事件
 const emit = defineEmits(['showMessage'])
@@ -38,7 +70,7 @@ const emit = defineEmits(['showMessage'])
 const getLogs = async () => {
   try {
     const response = await apiClient.get('/logs')
-    logs.value = response.data.logs || ''
+    logs.value = response.data.logs || []
   } catch (error) {
     emit('showMessage', { text: '获取日志失败: ' + (error.response?.data?.error || error.message), type: 'error' })
   }
@@ -52,11 +84,34 @@ const clearLogs = async () => {
   
   try {
     await apiClient.delete('/logs')
-    logs.value = ''
+    logs.value = []
     emit('showMessage', { text: '日志已清除!', type: 'success' })
   } catch (error) {
     emit('showMessage', { text: '清除日志失败: ' + (error.response?.data?.error || error.message), type: 'error' })
   }
+}
+
+// 切换日志详情展开/收起
+const toggleLogDetail = (logId) => {
+  const index = expandedLogs.value.indexOf(logId)
+  if (index === -1) {
+    expandedLogs.value.push(logId)
+  } else {
+    expandedLogs.value.splice(index, 1)
+  }
+}
+
+// 格式化日期
+const formatDate = (dateString) => {
+  const date = new Date(dateString)
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  })
 }
 
 // 页面加载时获取日志
@@ -106,15 +161,139 @@ onMounted(() => {
   border-radius: var(--radius-md);
   max-height: 600px;
   overflow-y: auto;
-  padding: 20px;
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 0.9rem;
-  line-height: 1.6;
+  padding: 10px;
 }
 
-.logs-content {
-  margin: 0;
+/* 日志列表 */
+.logs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+/* 日志项 */
+.log-item {
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 15px;
+  transition: all 0.3s ease;
+}
+
+.log-item:hover {
+  box-shadow: var(--shadow-sm);
+  border-color: var(--primary-color);
+}
+
+.log-item.log-success {
+  border-left: 4px solid var(--secondary-color);
+}
+
+.log-item.log-failed {
+  border-left: 4px solid var(--error-color);
+}
+
+/* 日志头部 */
+.log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* 日志元数据 */
+.log-meta {
+  display: flex;
+  gap: 15px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.log-node {
+  font-weight: 600;
+  color: var(--primary-color);
+  font-size: 0.95rem;
+}
+
+.log-operation {
+  font-weight: 500;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.log-status {
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.log-status.success {
+  background-color: rgba(46, 204, 113, 0.2);
+  color: var(--secondary-color);
+}
+
+.log-status.failed {
+  background-color: rgba(231, 76, 60, 0.2);
+  color: var(--error-color);
+}
+
+.log-time {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+/* 日志切换按钮 */
+.log-toggle {
+  padding: 6px 12px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xs);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  color: var(--text-primary);
+}
+
+.log-toggle:hover {
+  background-color: var(--border-color);
+  border-color: var(--primary-color);
+}
+
+/* 日志内容 */
+.log-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 日志命令 */
+.log-command {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.9rem;
   color: var(--text-secondary);
+  word-break: break-all;
+  background-color: var(--bg-secondary);
+  padding: 8px 12px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-color);
+}
+
+/* 日志输出 */
+.log-output {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background-color: var(--bg-secondary);
+  padding: 12px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-color);
+  max-height: 300px;
+  overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-all;
 }
@@ -175,5 +354,29 @@ onMounted(() => {
   background-color: var(--border-color);
   border-color: var(--border-light);
   transform: translateY(-1px);
+}
+
+/* 滚动条样式 */
+.logs-container::-webkit-scrollbar,
+.log-output::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.logs-container::-webkit-scrollbar-track,
+.log-output::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+}
+
+.logs-container::-webkit-scrollbar-thumb,
+.log-output::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+
+.logs-container::-webkit-scrollbar-thumb:hover,
+.log-output::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
 }
 </style>

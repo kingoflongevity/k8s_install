@@ -5,62 +5,151 @@
       <h3>集群初始化</h3>
       <div class="cluster-form-container">
         <form class="cluster-form" @submit.prevent="initCluster">
-          <div class="form-row">
-            <div class="form-group">
-              <label for="advertiseAddress">广告地址 (Advertise Address):</label>
-              <input 
-                type="text" 
-                id="advertiseAddress" 
-                v-model="config.advertiseAddress" 
-                placeholder="192.168.1.100" 
-                required
-              >
+          <!-- 基本配置 -->
+          <div class="form-section">
+            <h4>基本配置</h4>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="advertiseAddress">广告地址 (Advertise Address):</label>
+                <input 
+                  type="text" 
+                  id="advertiseAddress" 
+                  v-model="config.advertiseAddress" 
+                  placeholder="192.168.1.100" 
+                  required
+                >
+              </div>
+              <div class="form-group">
+                <label for="kubernetesVersion">Kubernetes 版本:</label>
+                <input 
+                  type="text" 
+                  id="kubernetesVersion" 
+                  v-model="config.kubernetesVersion" 
+                  placeholder="v1.30.0" 
+                  required
+                >
+              </div>
             </div>
-            <div class="form-group">
-              <label for="kubernetesVersion">Kubernetes 版本:</label>
-              <input 
-                type="text" 
-                id="kubernetesVersion" 
-                v-model="config.kubernetesVersion" 
-                placeholder="v1.30.0" 
-                required
-              >
-            </div>
-          </div>
-          
-          <div class="form-row">
-            <div class="form-group">
-              <label for="podSubnet">Pod 子网:</label>
-              <input 
-                type="text" 
-                id="podSubnet" 
-                v-model="config.podSubnet" 
-                placeholder="10.244.0.0/16" 
-                required
-              >
-            </div>
-            <div class="form-group">
-              <label for="serviceSubnet">Service 子网:</label>
-              <input 
-                type="text" 
-                id="serviceSubnet" 
-                v-model="config.serviceSubnet" 
-                placeholder="10.96.0.0/12" 
-                required
-              >
+            
+            <!-- 生产环境：控制平面端点，用于高可用性 -->
+            <div class="form-row">
+              <div class="form-group">
+                <label for="controlPlaneEndpoint">控制平面端点 (Control Plane Endpoint):</label>
+                <input 
+                  type="text" 
+                  id="controlPlaneEndpoint" 
+                  v-model="config.controlPlaneEndpoint" 
+                  placeholder="kube-api.example.com:6443" 
+                  title="用于高可用性集群的负载均衡器地址"
+                >
+              </div>
             </div>
           </div>
           
-          <div class="form-row">
-            <div class="form-group">
-              <label for="dnsDomain">DNS 域名:</label>
-              <input 
-                type="text" 
-                id="dnsDomain" 
-                v-model="config.dnsDomain" 
-                placeholder="cluster.local" 
-                required
-              >
+          <!-- 网络配置 -->
+          <div class="form-section">
+            <h4>网络配置</h4>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="podSubnet">Pod 子网:</label>
+                <input 
+                  type="text" 
+                  id="podSubnet" 
+                  v-model="config.podSubnet" 
+                  placeholder="10.244.0.0/16" 
+                  required
+                >
+              </div>
+              <div class="form-group">
+                <label for="serviceSubnet">Service 子网:</label>
+                <input 
+                  type="text" 
+                  id="serviceSubnet" 
+                  v-model="config.serviceSubnet" 
+                  placeholder="10.96.0.0/12" 
+                  required
+                >
+              </div>
+            </div>
+            
+            <div class="form-row">
+              <div class="form-group">
+                <label for="dnsDomain">DNS 域名:</label>
+                <input 
+                  type="text" 
+                  id="dnsDomain" 
+                  v-model="config.dnsDomain" 
+                  placeholder="cluster.local" 
+                  required
+                >
+              </div>
+              <div class="form-group">
+                <label for="serviceNodePortRange">Service NodePort 范围:</label>
+                <input 
+                  type="text" 
+                  id="serviceNodePortRange" 
+                  v-model="config.serviceNodePortRange" 
+                  placeholder="30000-32767"
+                >
+              </div>
+            </div>
+          </div>
+          
+          <!-- 生产环境：节点注册配置 -->
+          <div class="form-section">
+            <h4>节点注册配置</h4>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="nodeName">节点名称:</label>
+                <input 
+                  type="text" 
+                  id="nodeName" 
+                  v-model="config.nodeName" 
+                  placeholder="自动生成"
+                >
+              </div>
+              <div class="form-group">
+                <label for="criSocket">CRI Socket:</label>
+                <input 
+                  type="text" 
+                  id="criSocket" 
+                  v-model="config.criSocket" 
+                  placeholder="/run/containerd/containerd.sock"
+                >
+              </div>
+            </div>
+          </div>
+          
+          <!-- 生产环境：API服务器配置 -->
+          <div class="form-section">
+            <h4>API服务器配置</h4>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="timeoutForControlPlane">控制平面超时时间 (秒):</label>
+                <input 
+                  type="number" 
+                  id="timeoutForControlPlane" 
+                  v-model.number="config.timeoutForControlPlane" 
+                  placeholder="300"
+                  min="30"
+                >
+              </div>
+            </div>
+          </div>
+          
+          <!-- 生产环境：etcd配置 -->
+          <div class="form-section">
+            <h4>etcd配置</h4>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="etcdDataDir">etcd 数据目录:</label>
+                <input 
+                  type="text" 
+                  id="etcdDataDir" 
+                  v-model="config.etcdDataDir" 
+                  placeholder="/var/lib/etcd"
+                >
+              </div>
             </div>
           </div>
           
@@ -111,7 +200,7 @@ import axios from 'axios'
 
 // API 配置
 const apiClient = axios.create({
-  baseURL: 'http://localhost:8080/api',
+  baseURL: 'http://localhost:8080',
   timeout: 60000 // 60秒超时
 })
 
@@ -124,9 +213,15 @@ const joinCommand = ref('')
 const config = ref({
   advertiseAddress: '',
   kubernetesVersion: 'v1.30.0',
+  controlPlaneEndpoint: '', // 生产环境：用于高可用性
   podSubnet: '10.244.0.0/16',
   serviceSubnet: '10.96.0.0/12',
-  dnsDomain: 'cluster.local'
+  dnsDomain: 'cluster.local',
+  serviceNodePortRange: '30000-32767', // 生产环境：Service NodePort范围
+  nodeName: '', // 生产环境：节点名称
+  criSocket: '/run/containerd/containerd.sock', // 生产环境：CRI Socket
+  timeoutForControlPlane: 300, // 生产环境：API服务器超时时间
+  etcdDataDir: '/var/lib/etcd' // 生产环境：etcd数据目录
 })
 
 // 定义组件的事件
@@ -146,14 +241,28 @@ const initCluster = async () => {
         localAPIEndpoint: {
           advertiseAddress: config.value.advertiseAddress,
           bindPort: 6443
+        },
+        nodeRegistration: {
+          name: config.value.nodeName,
+          criSocket: config.value.criSocket
         }
       },
       clusterConfiguration: {
         kubernetesVersion: config.value.kubernetesVersion,
+        controlPlaneEndpoint: config.value.controlPlaneEndpoint,
         networking: {
           podSubnet: config.value.podSubnet,
           serviceSubnet: config.value.serviceSubnet,
-          dnsDomain: config.value.dnsDomain
+          dnsDomain: config.value.dnsDomain,
+          serviceNodePortRange: config.value.serviceNodePortRange
+        },
+        api: {
+          timeoutForControlPlane: config.value.timeoutForControlPlane
+        },
+        etcd: {
+          local: {
+            dataDir: config.value.etcdDataDir
+          }
         }
       }
     }
@@ -345,11 +454,41 @@ const copyJoinCommand = async () => {
   word-break: break-all;
 }
 
+/* 表单章节样式 */
+.form-section {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 20px;
+  margin-bottom: 20px;
+  transition: all 0.3s ease;
+}
+
+.form-section:hover {
+  box-shadow: var(--shadow-md);
+  border-color: var(--primary-light);
+}
+
+.form-section h4 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 15px 0;
+  padding-bottom: 8px;
+  border-bottom: 2px solid var(--primary-color);
+  display: inline-block;
+}
+
 /* 表单样式 */
 .form-row {
   display: flex;
   gap: 20px;
   flex-wrap: wrap;
+  margin-bottom: 15px;
+}
+
+.form-row:last-child {
+  margin-bottom: 0;
 }
 
 .form-row .form-group {
@@ -390,8 +529,10 @@ const copyJoinCommand = async () => {
 .form-actions {
   display: flex;
   gap: 12px;
-  margin-top: 10px;
+  margin-top: 20px;
   flex-wrap: wrap;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color);
 }
 
 /* 按钮样式 */

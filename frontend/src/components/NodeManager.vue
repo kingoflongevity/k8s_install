@@ -3,14 +3,21 @@
     <!-- 节点管理区域 -->
     <div class="nodes-section">
       <div class="nodes-controls">
-        <button class="btn btn-primary" @click="showAddNodeForm = !showAddNodeForm">
+        <button class="btn btn-primary" @click="showAddNodeForm = !showAddNodeForm; editMode = false; resetNewNodeForm()">
           {{ showAddNodeForm ? '取消添加' : '添加节点' }}
+        </button>
+        <button 
+          class="btn btn-secondary" 
+          @click="configureSSHPasswdless"
+          :disabled="nodes.length < 2"
+        >
+          配置节点SSH免密互通
         </button>
       </div>
 
-      <!-- 添加节点表单 -->
+      <!-- 添加/编辑节点表单 -->
       <div v-if="showAddNodeForm" class="add-node-panel">
-        <h3>添加新节点</h3>
+        <h3>{{ editMode ? '编辑节点' : '添加新节点' }}</h3>
         <form class="add-node-form" @submit.prevent="addNode">
           <div class="form-row">
             <div class="form-group">
@@ -40,12 +47,12 @@
               <input type="password" id="nodePasswordAdd" v-model="newNode.password" placeholder="密码（或使用私钥）">
             </div>
             <div class="form-group">
-              <label for="nodeTypeAdd">节点类型:</label>
-              <select id="nodeTypeAdd" v-model="newNode.nodeType" required>
-                <option value="master">Master</option>
-                <option value="worker">Worker</option>
-              </select>
-            </div>
+                <label for="nodeTypeAdd">节点类型:</label>
+                <select id="nodeTypeAdd" v-model="newNode.nodeType" required>
+                  <option value="master">Master (主节点)</option>
+                  <option value="worker">Worker (工作节点)</option>
+                </select>
+              </div>
           </div>
           
           <div class="form-group">
@@ -54,7 +61,9 @@
           </div>
           
           <div class="form-actions">
-            <button type="submit" class="btn btn-primary">添加节点</button>
+            <button type="submit" class="btn btn-primary">
+              {{ editMode ? '保存修改' : '添加节点' }}
+            </button>
             <button type="button" class="btn btn-secondary" @click="showAddNodeForm = false">取消</button>
           </div>
         </form>
@@ -90,14 +99,28 @@
                   @click="testNodeConnection(node.id)"
                   :disabled="node.status === 'deploying'"
                 >
-                  测试
+                  测试连接
                 </button>
                 <button 
                   class="btn btn-small btn-primary" 
-                  @click="deployNode(node.id)"
-                  :disabled="node.status === 'deploying' || node.status === 'ready'"
+                  @click="configureNodeSSH(node.id)"
+                  :disabled="node.status === 'deploying'"
                 >
-                  部署
+                  配置SSH
+                </button>
+                <button 
+                  class="btn btn-small btn-secondary" 
+                  @click="editNode(node)"
+                  :disabled="node.status === 'deploying'"
+                >
+                  编辑
+                </button>
+                <button 
+                  class="btn btn-small btn-danger" 
+                  @click="deleteNode(node.id)"
+                  :disabled="node.status === 'deploying'"
+                >
+                  删除
                 </button>
               </td>
             </tr>
@@ -118,13 +141,15 @@ import axios from 'axios'
 
 // API 配置
 const apiClient = axios.create({
-  baseURL: 'http://localhost:8080/api',
+  baseURL: 'http://localhost:8080',
   timeout: 60000 // 60秒超时
 })
 
-// 节点管理相关状态
+// 本地状态
 const nodes = ref([])
 const showAddNodeForm = ref(false)
+const editMode = ref(false)
+const editingNodeId = ref('')
 const newNode = ref({
   name: '',
   ip: '',
@@ -156,16 +181,65 @@ const getNodes = async () => {
   }
 }
 
-// 添加节点
+// 添加或编辑节点
 const addNode = async () => {
   try {
-    const response = await apiClient.post('/nodes', newNode.value)
-    nodes.value.push(response.data)
+    let response
+    if (editMode.value) {
+      // 编辑现有节点
+      response = await apiClient.put(`/nodes/${editingNodeId.value}`, newNode.value)
+      // 更新本地节点列表
+      const index = nodes.value.findIndex(n => n.id === editingNodeId.value)
+      if (index !== -1) {
+        nodes.value[index] = response.data
+      }
+      emit('showMessage', { text: '节点更新成功!', type: 'success' })
+    } else {
+      // 添加新节点
+      response = await apiClient.post('/nodes', newNode.value)
+      nodes.value.push(response.data)
+      emit('showMessage', { text: '节点添加成功!', type: 'success' })
+    }
     showAddNodeForm.value = false
     resetNewNodeForm()
-    emit('showMessage', { text: '节点添加成功!', type: 'success' })
+    editMode.value = false
+    editingNodeId.value = ''
   } catch (error) {
-    emit('showMessage', { text: '添加节点失败: ' + (error.response?.data?.error || error.message), type: 'error' })
+    emit('showMessage', { text: `${editMode.value ? '更新' : '添加'}节点失败: ` + (error.response?.data?.error || error.message), type: 'error' })
+  }
+}
+
+// 编辑节点
+const editNode = (node) => {
+  editingNodeId.value = node.id
+  editMode.value = true
+  showAddNodeForm.value = true
+  
+  // 填充表单数据
+  newNode.value = {
+    name: node.name,
+    ip: node.ip,
+    port: node.port,
+    username: node.username,
+    password: node.password,
+    privateKey: node.privateKey,
+    nodeType: node.nodeType
+  }
+}
+
+// 删除节点
+const deleteNode = async (nodeId) => {
+  if (!confirm('确定要删除该节点吗?')) {
+    return
+  }
+  
+  try {
+    await apiClient.delete(`/nodes/${nodeId}`)
+    // 从本地列表中移除节点
+    nodes.value = nodes.value.filter(n => n.id !== nodeId)
+    emit('showMessage', { text: '节点删除成功!', type: 'success' })
+  } catch (error) {
+    emit('showMessage', { text: '删除节点失败: ' + (error.response?.data?.error || error.message), type: 'error' })
   }
 }
 
@@ -194,28 +268,64 @@ const testNodeConnection = async (nodeId) => {
       emit('showMessage', { text: '节点连接测试失败!', type: 'error' })
     }
   } catch (error) {
-    emit('showMessage', { text: '测试节点连接失败: ' + (error.response?.data?.error || error.message), type: 'error' })
+    let errorMessage = '测试节点连接失败: '
+    const errorDetails = error.response?.data?.error || error.message
+    
+    // 根据错误信息提供更友好的提示
+    if (errorDetails.includes('connection refused')) {
+      errorMessage += '连接被拒绝，可能是目标服务器未开机或SSH服务未运行'
+    } else if (errorDetails.includes('timeout')) {
+      errorMessage += '连接超时，可能是网络问题或目标服务器防火墙设置'
+    } else if (errorDetails.includes('permission denied')) {
+      errorMessage += '权限被拒绝，可能是用户名或密码错误'
+    } else if (errorDetails.includes('no route to host')) {
+      errorMessage += '无法访问目标主机，可能是IP地址错误或网络不通'
+    } else if (errorDetails.includes('failed to parse private key')) {
+      errorMessage += '私钥解析失败，可能是私钥格式错误'
+    } else if (errorDetails.includes('either password or privateKey must be provided')) {
+      errorMessage += '请提供密码或私钥'
+    } else if (errorDetails.includes('unable to authenticate')) {
+      if (errorDetails.includes('attempted methods [none password]')) {
+        errorMessage += '认证失败，尝试了密码认证但失败，可能是密码错误或目标服务器不允许密码认证'
+      } else if (errorDetails.includes('attempted methods [none publickey]')) {
+        errorMessage += '认证失败，尝试了公钥认证但失败，可能是私钥不匹配或目标服务器未配置公钥'
+      } else {
+        errorMessage += '认证失败，可能是用户名、密码或私钥错误'
+      }
+    } else {
+      errorMessage += errorDetails
+    }
+    
+    emit('showMessage', { text: errorMessage, type: 'error' })
   }
 }
 
-// 部署节点
-const deployNode = async (nodeId) => {
+
+
+// 配置单个节点的SSH设置
+const configureNodeSSH = async (nodeId) => {
   try {
-    await apiClient.post(`/nodes/${nodeId}/deploy`)
-    emit('showMessage', { text: '节点部署已开始!', type: 'success' })
+    await apiClient.post(`/nodes/${nodeId}/ssh/configure`)
+    emit('showMessage', { text: '节点SSH配置成功!', type: 'success' })
     // 刷新节点列表
     await getNodes()
-    // 每隔3秒刷新一次节点状态，共刷新10次
-    let count = 0
-    const interval = setInterval(async () => {
-      await getNodes()
-      count++
-      if (count >= 10) {
-        clearInterval(interval)
-      }
-    }, 3000)
   } catch (error) {
-    emit('showMessage', { text: '部署节点失败: ' + (error.response?.data?.error || error.message), type: 'error' })
+    emit('showMessage', { text: '配置节点SSH失败: ' + (error.response?.data?.error || error.message), type: 'error' })
+  }
+}
+
+// 配置所有节点之间的SSH免密互通
+const configureSSHPasswdless = async () => {
+  if (nodes.value.length < 2) {
+    emit('showMessage', { text: '至少需要2个节点才能配置SSH免密互通!', type: 'warning' })
+    return
+  }
+
+  try {
+    await apiClient.post('/nodes/ssh/passwdless')
+    emit('showMessage', { text: '节点SSH免密互通配置成功!', type: 'success' })
+  } catch (error) {
+    emit('showMessage', { text: '配置节点SSH免密互通失败: ' + (error.response?.data?.error || error.message), type: 'error' })
   }
 }
 
@@ -517,6 +627,17 @@ onMounted(() => {
 .btn-info:hover:not(:disabled) {
   background-color: var(--primary-dark);
   transform: translateY(-1px);
+}
+
+.btn-danger {
+  background-color: var(--error-color);
+  color: white;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background-color: #c0392b;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(231, 76, 60, 0.3);
 }
 
 .btn-small {

@@ -10,6 +10,7 @@
     <Dashboard 
       v-if="activeMenu === 'dashboard'"
       :kubeadm-version="kubeadmVersion"
+      :docker-version="dockerVersion"
       :nodes="nodes"
       :system-online="systemOnline"
       :api-status="apiStatus"
@@ -20,6 +21,7 @@
       v-else-if="activeMenu === 'kubeadm'"
       :available-versions="availableVersions"
       @show-message="showMessage"
+      @set-kubeadm-version="kubeadmVersion = $event"
     />
     
     <!-- 节点管理 -->
@@ -39,6 +41,12 @@
       v-else-if="activeMenu === 'logs'"
       @show-message="showMessage"
     />
+    
+    <!-- Docker管理 -->
+    <DockerManager 
+      v-else-if="activeMenu === 'docker'"
+      @show-message="showMessage"
+    />
   </Layout>
 </template>
 
@@ -53,15 +61,17 @@ import KubeadmManager from './components/KubeadmManager.vue'
 import NodeManager from './components/NodeManager.vue'
 import ClusterManager from './components/ClusterManager.vue'
 import LogManager from './components/LogManager.vue'
+import DockerManager from './components/DockerManager.vue'
 
 // API 配置
 const apiClient = axios.create({
-  baseURL: 'http://localhost:8080/api',
+  baseURL: 'http://localhost:8080',
   timeout: 60000 // 60秒超时
 })
 
 // 状态变量
 const kubeadmVersion = ref('')
+const dockerVersion = ref('')
 const message = ref(null)
 const systemOnline = ref(true)
 const apiStatus = ref('online')
@@ -73,16 +83,10 @@ const availableVersions = ref([])
 // 节点管理相关状态
 const nodes = ref([])
 
-// 获取 Kubeadm 版本
-const getKubeadmVersion = async () => {
-  try {
-    const response = await apiClient.get('/kubeadm/version')
-    kubeadmVersion.value = response.data.version
-  } catch (error) {
-    showMessage('获取 Kubeadm 版本失败: ' + error.message, 'error')
-    apiStatus.value = 'offline'
-    systemOnline.value = false
-  }
+// 获取 Kubeadm 版本 - 只在用户下载包后才显示，这里不再自动获取
+const getKubeadmVersion = () => {
+  // 不自动获取版本，由用户下载包后设置
+  // 保持函数定义以兼容现有代码
 }
 
 // 获取可用的 Kubeadm 版本列表
@@ -134,7 +138,6 @@ const closeMessage = () => {
 
 // 页面加载时获取状态
 onMounted(() => {
-  getKubeadmVersion()
   getNodes()
   getAvailableVersions()
 })
@@ -148,48 +151,5 @@ onMounted(() => {
   box-sizing: border-box;
 }
 
-:root {
-  /* 主题颜色 */
-  --primary-color: #3498db;
-  --primary-dark: #2980b9;
-  --secondary-color: #2ecc71;
-  --success-color: #27ae60;
-  --error-color: #e74c3c;
-  --warning-color: #f39c12;
-  --info-color: #3498db;
-  
-  /* 背景颜色 */
-  --bg-primary: #0a0e27;
-  --bg-secondary: #121735;
-  --bg-card: #1e2440;
-  --bg-input: #2a2f4c;
-  
-  /* 文本颜色 */
-  --text-primary: #ffffff;
-  --text-secondary: #b0b8d4;
-  --text-muted: #7a82a6;
-  
-  /* 边框颜色 */
-  --border-color: #3a4167;
-  --border-light: #4a5078;
-  
-  /* 阴影效果 */
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.2);
-  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.3);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.4);
-  
-  /* 圆角 */
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-}
-
-body {
-  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-  background-color: var(--bg-primary);
-  color: var(--text-primary);
-  line-height: 1.6;
-  margin: 0;
-  padding: 0;
-}
+/* CSS变量已在style.css中定义，此处不再重复 */
 </style>

@@ -13,7 +13,12 @@
             <div class="status-item">
               <span class="status-label">Kubeadm 版本:</span>
               <span v-if="kubeadmVersion" class="status-value">{{ kubeadmVersion }}</span>
-              <span v-else class="status-loading">加载中...</span>
+              <span v-else class="status-value status-muted">未安装</span>
+            </div>
+            <div class="status-item">
+              <span class="status-label">Docker 版本:</span>
+              <span v-if="dockerVersion" class="status-value">{{ dockerVersion }}</span>
+              <span v-else class="status-value status-muted">未安装</span>
             </div>
             <div class="status-item">
               <span class="status-label">API 状态:</span>
@@ -84,6 +89,10 @@
 // 定义组件的属性和事件
 const props = defineProps({
   kubeadmVersion: {
+    type: String,
+    default: ''
+  },
+  dockerVersion: {
     type: String,
     default: ''
   },
@@ -214,6 +223,11 @@ const emit = defineEmits(['navigate'])
 
 .status-value.error {
   color: var(--error-color);
+}
+
+.status-value.status-muted {
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 .status-loading {
