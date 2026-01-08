@@ -14,9 +14,10 @@ import (
 
 // FileNodeManager 文件节点管理器
 type FileNodeManager struct {
-	nodes    map[string]Node
-	mutex    sync.RWMutex
-	filePath string
+	nodes         map[string]Node
+	mutex         sync.RWMutex
+	filePath      string
+	scriptManager interface{} // 脚本管理器接口
 }
 
 // NewFileNodeManager 创建新的文件节点管理器
@@ -172,20 +173,19 @@ func (m *FileNodeManager) DeleteNode(id string) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	// 检查节点是否存在
-	_, exists := m.nodes[id]
-	if !exists {
+	if _, exists := m.nodes[id]; !exists {
 		return errors.New("node not found")
 	}
 
-	// 删除节点
 	delete(m.nodes, id)
+	return m.saveNodes()
+}
 
-	// 保存到文件
-	if err := m.saveNodes(); err != nil {
-		return fmt.Errorf("failed to delete node: %v", err)
-	}
-
+// SetScriptManager 设置脚本管理器
+func (m *FileNodeManager) SetScriptManager(scriptManager interface{}) error {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.scriptManager = scriptManager
 	return nil
 }
 
@@ -239,288 +239,6 @@ func (m *FileNodeManager) TestConnection(id string) (bool, error) {
 	}
 
 	return true, nil
-}
-
-// InstallDocker 安装Docker容器运行时
-func (m *FileNodeManager) InstallDocker(id string) error {
-	// 获取节点
-	node, err := m.GetNode(id)
-	if err != nil {
-		return err
-	}
-
-	// 测试连接
-	connected, err := m.TestConnection(id)
-	if !connected {
-		return err
-	}
-
-	// 执行安装逻辑
-	sshConfig := ssh.SSHConfig{
-		Host:       node.IP,
-		Port:       node.Port,
-		Username:   node.Username,
-		Password:   node.Password,
-		PrivateKey: node.PrivateKey,
-	}
-
-	client, err := ssh.NewSSHClient(sshConfig)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	// 1. 检测操作系统类型
-	distroCmd := `
-if [ -f /etc/os-release ]; then
-	. /etc/os-release
-	echo $ID
-fi
-`
-	distroOutput, err := client.RunCommand(distroCmd)
-	if err != nil {
-		return err
-	}
-	distro := strings.TrimSpace(distroOutput)
-
-	// 2. 安装Docker
-	return m.installContainerRuntime(client, distro, "docker", "")
-}
-
-// ConfigureDocker 配置Docker
-func (m *FileNodeManager) ConfigureDocker(id string, config DockerConfig) error {
-	// 获取节点
-	node, err := m.GetNode(id)
-	if err != nil {
-		return err
-	}
-
-	// 测试连接
-	connected, err := m.TestConnection(id)
-	if !connected {
-		return err
-	}
-
-	// 执行配置逻辑
-	sshConfig := ssh.SSHConfig{
-		Host:       node.IP,
-		Port:       node.Port,
-		Username:   node.Username,
-		Password:   node.Password,
-		PrivateKey: node.PrivateKey,
-	}
-
-	client, err := ssh.NewSSHClient(sshConfig)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	// 构建daemon.json配置
-	configCmd := fmt.Sprintf(`
-mkdir -p /etc/docker
-cat <<EOF | tee /etc/docker/daemon.json
-{
-	"exec-opts": ["native.cgroupdriver=%s"],
-	"log-driver": "%s",
-	"log-opts": {
-		"max-size": "%s",
-		"max-file": "%d"
-	},
-	"storage-driver": "%s",
-	"registry-mirrors": %s,
-	"data-root": "%s"
-}
-EOF
-systemctl daemon-reload
-systemctl restart docker
-`,
-		config.CgroupDriver,
-		config.LogDriver,
-		config.LogMaxSize,
-		config.LogMaxFile,
-		config.StorageDriver,
-		fileFormatRegMirrors(config.RegistryMirrors),
-		config.DataRoot,
-	)
-
-	_, err = client.RunCommand(configCmd)
-	return err
-}
-
-// StartDocker 启动Docker服务
-func (m *FileNodeManager) StartDocker(id string) error {
-	// 获取节点
-	node, err := m.GetNode(id)
-	if err != nil {
-		return err
-	}
-
-	// 执行启动逻辑
-	sshConfig := ssh.SSHConfig{
-		Host:       node.IP,
-		Port:       node.Port,
-		Username:   node.Username,
-		Password:   node.Password,
-		PrivateKey: node.PrivateKey,
-	}
-
-	client, err := ssh.NewSSHClient(sshConfig)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	startCmd := `
-systemctl start docker
-systemctl enable docker
-`
-
-	_, err = client.RunCommand(startCmd)
-	return err
-}
-
-// StopDocker 停止Docker服务
-func (m *FileNodeManager) StopDocker(id string) error {
-	// 获取节点
-	node, err := m.GetNode(id)
-	if err != nil {
-		return err
-	}
-
-	// 执行停止逻辑
-	sshConfig := ssh.SSHConfig{
-		Host:       node.IP,
-		Port:       node.Port,
-		Username:   node.Username,
-		Password:   node.Password,
-		PrivateKey: node.PrivateKey,
-	}
-
-	client, err := ssh.NewSSHClient(sshConfig)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	stopCmd := `
-systemctl stop docker
-systemctl disable docker
-`
-
-	_, err = client.RunCommand(stopCmd)
-	return err
-}
-
-// CheckDockerStatus 检查Docker服务状态
-func (m *FileNodeManager) CheckDockerStatus(id string) (string, error) {
-	// 获取节点
-	node, err := m.GetNode(id)
-	if err != nil {
-		return "", err
-	}
-
-	// 执行状态检查逻辑
-	sshConfig := ssh.SSHConfig{
-		Host:       node.IP,
-		Port:       node.Port,
-		Username:   node.Username,
-		Password:   node.Password,
-		PrivateKey: node.PrivateKey,
-	}
-
-	client, err := ssh.NewSSHClient(sshConfig)
-	if err != nil {
-		return "", err
-	}
-	defer client.Close()
-
-	statusCmd := `
-if systemctl is-active --quiet docker; then
-    echo "running"
-elif systemctl is-enabled --quiet docker; then
-    echo "enabled but not running"
-else
-    echo "stopped"
-fi
-`
-
-	statusOutput, err := client.RunCommand(statusCmd)
-	if err != nil {
-		return "", err
-	}
-
-	return strings.TrimSpace(statusOutput), nil
-}
-
-// BatchInstallDocker 批量安装Docker容器运行时
-func (m *FileNodeManager) BatchInstallDocker(nodeIds []string) (string, error) {
-	var results strings.Builder
-	for _, id := range nodeIds {
-		results.WriteString(fmt.Sprintf("=== 节点 %s ===\n", id))
-		if err := m.InstallDocker(id); err != nil {
-			results.WriteString(fmt.Sprintf("安装失败: %v\n\n", err))
-		} else {
-			results.WriteString("安装成功\n\n")
-		}
-	}
-	return results.String(), nil
-}
-
-// BatchConfigureDocker 批量配置Docker
-func (m *FileNodeManager) BatchConfigureDocker(nodeIds []string, config DockerConfig) (string, error) {
-	var results strings.Builder
-	for _, id := range nodeIds {
-		results.WriteString(fmt.Sprintf("=== 节点 %s ===\n", id))
-		if err := m.ConfigureDocker(id, config); err != nil {
-			results.WriteString(fmt.Sprintf("配置失败: %v\n\n", err))
-		} else {
-			results.WriteString("配置成功\n\n")
-		}
-	}
-	return results.String(), nil
-}
-
-// BatchStartDocker 批量启动Docker服务
-func (m *FileNodeManager) BatchStartDocker(nodeIds []string) (string, error) {
-	var results strings.Builder
-	for _, id := range nodeIds {
-		results.WriteString(fmt.Sprintf("=== 节点 %s ===\n", id))
-		if err := m.StartDocker(id); err != nil {
-			results.WriteString(fmt.Sprintf("启动失败: %v\n\n", err))
-		} else {
-			results.WriteString("启动成功\n\n")
-		}
-	}
-	return results.String(), nil
-}
-
-// BatchStopDocker 批量停止Docker服务
-func (m *FileNodeManager) BatchStopDocker(nodeIds []string) (string, error) {
-	var results strings.Builder
-	for _, id := range nodeIds {
-		results.WriteString(fmt.Sprintf("=== 节点 %s ===\n", id))
-		if err := m.StopDocker(id); err != nil {
-			results.WriteString(fmt.Sprintf("停止失败: %v\n\n", err))
-		} else {
-			results.WriteString("停止成功\n\n")
-		}
-	}
-	return results.String(), nil
-}
-
-// BatchCheckDockerStatus 批量检查Docker服务状态
-func (m *FileNodeManager) BatchCheckDockerStatus(nodeIds []string) (map[string]string, error) {
-	statusMap := make(map[string]string)
-	for _, id := range nodeIds {
-		status, err := m.CheckDockerStatus(id)
-		if err != nil {
-			statusMap[id] = fmt.Sprintf("获取状态失败: %v", err)
-		} else {
-			statusMap[id] = status
-		}
-	}
-	return statusMap, nil
 }
 
 // ConfigureSSHSettings 配置节点SSH设置
@@ -845,15 +563,11 @@ modprobe overlay
 // installContainerRuntime 安装容器运行时
 func (m *FileNodeManager) installContainerRuntime(client *ssh.SSHClient, distro, runtime, version string) error {
 	var cmd string
+	// 只支持containerd
 	switch distro {
 	case "ubuntu", "debian":
-		if runtime == "containerd" {
-			cmd = `
-		apt-get update && apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
-		mkdir -p /etc/apt/keyrings
-		curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-		echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-		apt-get update && apt-get install -y containerd.io
+		cmd = `
+		apt-get update && apt-get install -y containerd
 		mkdir -p /etc/containerd
 		containerd config default | tee /etc/containerd/config.toml
 		# 生产环境优化：设置SystemdCgroup、 sandbox_image、默认运行时等
@@ -866,54 +580,25 @@ func (m *FileNodeManager) installContainerRuntime(client *ssh.SSHClient, distro,
 		systemctl restart containerd
 		systemctl enable containerd
 		`
-		} else {
-			cmd = `
-		apt-get update && apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
-		mkdir -p /etc/apt/keyrings
-		curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-		echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-		apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io
-		systemctl enable docker && systemctl start docker
-		# 配置Docker使用systemd cgroup驱动
-		mkdir -p /etc/docker
-		cat <<EOF | tee /etc/docker/daemon.json
-		{ "exec-opts": ["native.cgroupdriver=systemd"], "log-driver": "json-file", "log-opts": { "max-size": "100m" }, "storage-driver": "overlay2" }
-		EOF
-		systemctl restart docker
-		`
-		}
 	case "centos", "rhel", "rocky", "alma":
-		if runtime == "containerd" {
-			cmd = `
-	yum install -y yum-utils
-yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-yum install -y containerd.io
-mkdir -p /etc/containerd
-containerd config default | tee /etc/containerd/config.toml
-# 生产环境优化：设置SystemdCgroup、 sandbox_image、默认运行时等
-sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
-sed -i 's/sandbox_image = "registry.k8s.io\/pause:3.6"/sandbox_image = "registry.k8s.io\/pause:3.9"/g' /etc/containerd/config.toml
-sed -i '/\[plugins."io.containerd.grpc.v1.cri\.containerd.runtimes.runc.options"\]/a\          SystemdCgroup = true' /etc/containerd/config.toml
-# 配置镜像加速
-sed -i '/\[plugins."io.containerd.grpc.v1.cri"\]/a\  sandbox_image = "registry.k8s.io\/pause:3.9"' /etc/containerd/config.toml
-sed -i '/\[plugins."io.containerd.grpc.v1.cri"\]/a\  systemd_cgroup = true' /etc/containerd/config.toml
-systemctl restart containerd
-systemctl enable containerd
-			`
-		} else {
-			cmd = `
-	yum install -y yum-utils
-yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-yum install -y docker-ce docker-ce-cli containerd.io
-systemctl enable docker && systemctl start docker
-# 配置Docker使用systemd cgroup驱动
-mkdir -p /etc/docker
-cat <<EOF | tee /etc/docker/daemon.json
-{ "exec-opts": ["native.cgroupdriver=systemd"], "log-driver": "json-file", "log-opts": { "max-size": "100m" }, "storage-driver": "overlay2" }
-EOF
-systemctl restart docker
-			`
-		}
+		cmd = `
+	if command -v dnf &> /dev/null; then
+		dnf install -y containerd
+	else
+		yum install -y containerd
+	fi
+	mkdir -p /etc/containerd
+	containerd config default | tee /etc/containerd/config.toml
+	# 生产环境优化：设置SystemdCgroup、 sandbox_image、默认运行时等
+	sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
+	sed -i 's/sandbox_image = "registry.k8s.io\/pause:3.6"/sandbox_image = "registry.k8s.io\/pause:3.9"/g' /etc/containerd/config.toml
+	sed -i '/\[plugins."io.containerd.grpc.v1.cri\.containerd.runtimes.runc.options"\]/a\          SystemdCgroup = true' /etc/containerd/config.toml
+	# 配置镜像加速
+	sed -i '/\[plugins."io.containerd.grpc.v1.cri"\]/a\  sandbox_image = "registry.k8s.io\/pause:3.9"' /etc/containerd/config.toml
+	sed -i '/\[plugins."io.containerd.grpc.v1.cri"\]/a\  systemd_cgroup = true' /etc/containerd/config.toml
+	systemctl restart containerd
+	systemctl enable containerd
+		`
 	default:
 		return fmt.Errorf("unsupported distribution: %s", distro)
 	}
@@ -922,12 +607,93 @@ systemctl restart docker
 	return err
 }
 
-// installKubernetesComponents 安装Kubernetes组件
+// InstallKubernetesComponents 安装Kubernetes组件（公开方法，实现NodeManager接口）
+func (m *FileNodeManager) InstallKubernetesComponents(id string, kubeadmVersion string) error {
+	// 获取节点
+	node, err := m.GetNode(id)
+	if err != nil {
+		return err
+	}
+
+	// 测试连接
+	connected, err := m.TestConnection(id)
+	if !connected {
+		return err
+	}
+
+	// 执行安装逻辑
+	sshConfig := ssh.SSHConfig{
+		Host:       node.IP,
+		Port:       node.Port,
+		Username:   node.Username,
+		Password:   node.Password,
+		PrivateKey: node.PrivateKey,
+	}
+
+	client, err := ssh.NewSSHClient(sshConfig)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	// 1. 检测操作系统类型
+	distroCmd := `
+if [ -f /etc/os-release ]; then
+	. /etc/os-release
+	echo $ID
+fi
+`
+	distroOutput, err := client.RunCommand(distroCmd)
+	if err != nil {
+		return err
+	}
+	distro := strings.TrimSpace(distroOutput)
+
+	// 调用私有的安装方法
+	return m.installKubernetesComponents(client, distro)
+}
+
+// installKubernetesComponents 安装Kubernetes组件（私有辅助方法）
 func (m *FileNodeManager) installKubernetesComponents(client *ssh.SSHClient, distro string) error {
 	var cmd string
-	switch distro {
-	case "ubuntu", "debian":
-		cmd = `
+	var found bool
+
+	// 从脚本管理器获取Kubernetes组件安装脚本
+	if m.scriptManager != nil {
+		if scriptGetter, ok := m.scriptManager.(interface {
+			GetScript(name string) (string, bool)
+		}); ok {
+			// 尝试获取特定发行版的脚本，使用与前端一致的命名格式: ${system}_${step.name.toLowerCase().replace(/\s+/g, '_')}
+			// 前端步骤名为 "安装Kubernetes组件"
+			componentScriptName := fmt.Sprintf("%s_安装kubernetes组件", distro)
+			if script, scriptFound := scriptGetter.GetScript(componentScriptName); scriptFound {
+				cmd = script
+				found = true
+				fmt.Printf("Using custom script for Kubernetes components installation on %s\n", distro)
+			} else {
+				// 尝试获取旧格式的脚本，保持向后兼容
+				oldComponentScriptName := fmt.Sprintf("k8s_components_%s", distro)
+				if script, scriptFound := scriptGetter.GetScript(oldComponentScriptName); scriptFound {
+					cmd = script
+					found = true
+					fmt.Printf("Using old format custom script for Kubernetes components installation on %s\n", distro)
+				} else {
+					// 尝试获取通用脚本
+					if script, scriptFound := scriptGetter.GetScript("k8s_components"); scriptFound {
+						cmd = script
+						found = true
+						fmt.Printf("Using custom script for Kubernetes components installation\n")
+					}
+				}
+			}
+		}
+	}
+
+	// 如果没有找到自定义脚本，使用默认命令
+	if !found {
+		switch distro {
+		case "ubuntu", "debian":
+			cmd = `
 apt-get update
 apt-get install -y apt-transport-https ca-certificates curl
 curl -fsSLo /usr/share/keyrings/kubernetes-archive-keyring.gpg https://packages.cloud.google.com/apt/doc/apt-key.gpg
@@ -944,10 +710,11 @@ KUBELET_EXTRA_ARGS="--cgroup-driver=systemd --runtime-cgroups=/system.slice/cont
 EOF
 
 systemctl daemon-reload
-systemctl enable --now kubelet
+systemctl restart kubelet
+systemctl enable kubelet
 		`
-	case "centos", "rhel", "rocky", "alma":
-		cmd = `
+		case "centos", "rhel", "rocky", "alma":
+			cmd = `
 yum install -y yum-utils
 yum-config-manager --add-repo https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
 rpm --import https://packages.cloud.google.com/yum/doc/yum-key.gpg
@@ -966,29 +733,14 @@ KUBELET_EXTRA_ARGS="--cgroup-driver=systemd --runtime-cgroups=/system.slice/cont
 EOF
 
 systemctl daemon-reload
-systemctl enable --now kubelet
+systemctl restart kubelet
+systemctl enable kubelet
 		`
-	default:
-		return fmt.Errorf("unsupported distribution: %s", distro)
+		default:
+			return fmt.Errorf("unsupported distribution: %s", distro)
+		}
 	}
 
 	_, err := client.RunCommand(cmd)
 	return err
-}
-
-// fileFormatRegMirrors 格式化镜像加速地址为JSON数组
-func fileFormatRegMirrors(mirrors []string) string {
-	if len(mirrors) == 0 {
-		return "[]"
-	}
-
-	result := "["
-	for i, mirror := range mirrors {
-		result += fmt.Sprintf(`\"%s\"`, mirror)
-		if i < len(mirrors)-1 {
-			result += ","
-		}
-	}
-	result += "]"
-	return result
 }

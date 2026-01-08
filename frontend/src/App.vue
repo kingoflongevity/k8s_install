@@ -6,52 +6,24 @@
     @update:activeMenu="activeMenu = $event"
     @close-message="closeMessage"
   >
-    <!-- 仪表盘概览 -->
-    <Dashboard 
-      v-if="activeMenu === 'dashboard'"
+    <keep-alive>
+      <component 
+      :is="currentComponent" 
+      :available-versions="availableVersions"
       :kubeadm-version="kubeadmVersion"
-      :docker-version="dockerVersion"
       :nodes="nodes"
       :system-online="systemOnline"
       :api-status="apiStatus"
-    />
-    
-    <!-- Kubeadm 包管理 -->
-    <KubeadmManager 
-      v-else-if="activeMenu === 'kubeadm'"
-      :available-versions="availableVersions"
       @show-message="showMessage"
       @set-kubeadm-version="kubeadmVersion = $event"
+      @update:nodes="getNodes"
     />
-    
-    <!-- 节点管理 -->
-    <NodeManager 
-      v-else-if="activeMenu === 'nodes'"
-      @show-message="showMessage"
-    />
-    
-    <!-- 集群管理 -->
-    <ClusterManager 
-      v-else-if="activeMenu === 'cluster'"
-      @show-message="showMessage"
-    />
-    
-    <!-- 日志管理 -->
-    <LogManager 
-      v-else-if="activeMenu === 'logs'"
-      @show-message="showMessage"
-    />
-    
-    <!-- Docker管理 -->
-    <DockerManager 
-      v-else-if="activeMenu === 'docker'"
-      @show-message="showMessage"
-    />
+    </keep-alive>
   </Layout>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import axios from 'axios'
 
 // 导入组件
@@ -61,17 +33,29 @@ import KubeadmManager from './components/KubeadmManager.vue'
 import NodeManager from './components/NodeManager.vue'
 import ClusterManager from './components/ClusterManager.vue'
 import LogManager from './components/LogManager.vue'
-import DockerManager from './components/DockerManager.vue'
+import DeploymentManager from './components/DeploymentManager.vue'
+
+// 组件映射
+const componentMap = {
+  dashboard: Dashboard,
+  kubeadm: KubeadmManager,
+  nodes: NodeManager,
+  cluster: ClusterManager,
+  logs: LogManager,
+  deployment: DeploymentManager
+}
+
+// 当前活动组件
+const currentComponent = computed(() => componentMap[activeMenu.value] || Dashboard)
 
 // API 配置
 const apiClient = axios.create({
   baseURL: 'http://localhost:8080',
-  timeout: 60000 // 60秒超时
+  timeout: 300000 // 5分钟超时，适应Kubernetes组件安装的耗时过程
 })
 
 // 状态变量
 const kubeadmVersion = ref('')
-const dockerVersion = ref('')
 const message = ref(null)
 const systemOnline = ref(true)
 const apiStatus = ref('online')
@@ -98,11 +82,9 @@ const getAvailableVersions = async () => {
       availableVersions.value = response.data.versions
     } else {
       availableVersions.value = ['v1.30.0', 'v1.29.4', 'v1.28.8', 'v1.27.12']
-      showMessage('API返回的版本列表格式错误，使用默认版本', 'warning')
     }
   } catch (error) {
-    showMessage('获取可用版本列表失败: ' + error.message, 'error')
-    // 使用默认版本列表
+    // 使用默认版本列表，不显示错误消息
     availableVersions.value = ['v1.30.0', 'v1.29.4', 'v1.28.8', 'v1.27.12']
   }
 }
@@ -116,11 +98,9 @@ const getNodes = async () => {
       nodes.value = response.data
     } else {
       nodes.value = []
-      showMessage('API返回的数据格式错误，期望数组类型', 'warning')
     }
   } catch (error) {
-    showMessage('获取节点列表失败: ' + error.message, 'error')
-    // 确保nodes.value始终是数组
+    // 使用空数组，不显示错误消息
     nodes.value = []
   }
 }

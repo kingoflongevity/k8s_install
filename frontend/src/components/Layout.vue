@@ -30,7 +30,7 @@
               @click.prevent="emit('update:activeMenu', 'kubeadm')"
             >
               <span class="nav-icon">📦</span>
-              <span class="nav-text">Kubeadm 管理</span>
+              <span class="nav-text">Kubernetes集群部署</span>
             </a>
           </li>
           <li>
@@ -70,11 +70,11 @@
             <a 
               href="#" 
               class="nav-item" 
-              :class="{ active: activeMenu === 'docker' }"
-              @click.prevent="emit('update:activeMenu', 'docker')"
+              :class="{ active: activeMenu === 'deployment' }"
+              @click.prevent="emit('update:activeMenu', 'deployment')"
             >
-              <span class="nav-icon">🐳</span>
-              <span class="nav-text">Docker 管理</span>
+              <span class="nav-icon">📋</span>
+              <span class="nav-text">部署流程管理</span>
             </a>
           </li>
         </ul>
@@ -155,17 +155,17 @@ if (localStorage.getItem('theme') === 'light') {
 }
 
 // 获取页面标题
-const getPageTitle = () => {
-  const titles = {
-    dashboard: '仪表盘概览',
-    kubeadm: 'Kubeadm 包管理',
-    nodes: '节点管理',
-    cluster: '集群管理',
-    logs: '部署日志',
-    docker: 'Docker 容器管理'
+  const getPageTitle = () => {
+    const titles = {
+      dashboard: '仪表盘概览',
+      kubeadm: 'Kubernetes集群部署',
+      nodes: '节点管理',
+      cluster: '集群管理',
+      logs: '部署日志',
+      deployment: '部署流程管理'
+    }
+    return titles[props.activeMenu] || 'K8s Deploy'
   }
-  return titles[props.activeMenu] || 'K8s Deploy'
-}
 
 // 关闭消息
 const closeMessage = () => {

@@ -136,13 +136,13 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onActivated } from 'vue'
 import axios from 'axios'
 
 // API 配置
 const apiClient = axios.create({
   baseURL: 'http://localhost:8080',
-  timeout: 60000 // 60秒超时
+  timeout: 300000 // 5分钟超时，适应Kubernetes组件安装的耗时过程
 })
 
 // 本地状态
@@ -344,6 +344,11 @@ const formatDate = (dateString) => {
 
 // 页面加载时获取节点列表
 onMounted(() => {
+  getNodes()
+})
+
+// 组件激活时刷新数据
+onActivated(() => {
   getNodes()
 })
 </script>

@@ -151,15 +151,34 @@ install_kubeadm() {
     
     case $DISTRO in
         ubuntu|debian)
+            # 按照官方推荐方法安装
             apt-get update
             apt-get install -y apt-transport-https ca-certificates curl
+            
+            # 添加Kubernetes官方GPG密钥
             curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+            
+            # 添加Kubernetes官方源
             echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list
+            
             apt-get update
+            # 安装kubeadm、kubelet和kubectl
             apt-get install -y kubelet kubeadm kubectl
+            # 锁定版本，防止意外升级
             apt-mark hold kubelet kubeadm kubectl
+            
+            # 配置kubelet使用systemd cgroup驱动
+            cat <<EOF | tee /etc/default/kubelet
+KUBELET_EXTRA_ARGS="--cgroup-driver=systemd --runtime-cgroups=/system.slice/containerd.service --kubelet-cgroups=/system.slice/kubelet.service"
+EOF
+            
+            systemctl daemon-reload
+            systemctl restart kubelet
+            systemctl enable kubelet
             ;;
         centos|rhel|rocky|almalinux)
+            # 按照官方推荐方法安装
+            # 添加Kubernetes官方源
             cat <<EOF > /etc/yum.repos.d/kubernetes.repo
 [kubernetes]
 name=Kubernetes
@@ -169,10 +188,24 @@ gpgkey=https://pkgs.k8s.io/core:/stable:/v1.30/rpm/repodata/repomd.xml.key
 enabled=1
 exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
 EOF
+            
+            # 安装kubeadm、kubelet和kubectl
             yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
-            systemctl enable --now kubelet
+            # 锁定版本，防止意外升级
+            yum versionlock add kubelet kubeadm kubectl
+            
+            # 配置kubelet使用systemd cgroup驱动
+            cat <<EOF | tee /etc/sysconfig/kubelet
+KUBELET_EXTRA_ARGS="--cgroup-driver=systemd --runtime-cgroups=/system.slice/containerd.service --kubelet-cgroups=/system.slice/kubelet.service"
+EOF
+            
+            systemctl daemon-reload
+            systemctl restart kubelet
+            systemctl enable kubelet
             ;;
         fedora)
+            # 按照官方推荐方法安装
+            # 添加Kubernetes官方源
             cat <<EOF > /etc/yum.repos.d/kubernetes.repo
 [kubernetes]
 name=Kubernetes
@@ -182,8 +215,20 @@ gpgkey=https://pkgs.k8s.io/core:/stable:/v1.30/rpm/repodata/repomd.xml.key
 enabled=1
 exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
 EOF
+            
+            # 安装kubeadm、kubelet和kubectl
             dnf install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
-            systemctl enable --now kubelet
+            # 锁定版本，防止意外升级
+            dnf versionlock add kubelet kubeadm kubectl
+            
+            # 配置kubelet使用systemd cgroup驱动
+            cat <<EOF | tee /etc/sysconfig/kubelet
+KUBELET_EXTRA_ARGS="--cgroup-driver=systemd --runtime-cgroups=/system.slice/containerd.service --kubelet-cgroups=/system.slice/kubelet.service"
+EOF
+            
+            systemctl daemon-reload
+            systemctl restart kubelet
+            systemctl enable kubelet
             ;;
     esac
     

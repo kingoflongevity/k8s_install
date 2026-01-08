@@ -11,15 +11,11 @@
           </div>
           <div class="card-body">
             <div class="status-item">
-              <span class="status-label">Kubeadm 版本:</span>
+              <span class="status-label">Kubernetes 版本:</span>
               <span v-if="kubeadmVersion" class="status-value">{{ kubeadmVersion }}</span>
               <span v-else class="status-value status-muted">未安装</span>
             </div>
-            <div class="status-item">
-              <span class="status-label">Docker 版本:</span>
-              <span v-if="dockerVersion" class="status-value">{{ dockerVersion }}</span>
-              <span v-else class="status-value status-muted">未安装</span>
-            </div>
+
             <div class="status-item">
               <span class="status-label">API 状态:</span>
               <span class="status-value" :class="{ 'success': apiStatus === 'online', 'error': apiStatus === 'offline' }">{{ apiStatus }}</span>
@@ -72,7 +68,7 @@
             </button>
             <button class="btn btn-primary" @click="$emit('navigate', 'kubeadm')">
               <span class="btn-icon">📦</span>
-              <span>管理 Kubeadm 包</span>
+              <span>部署Kubernetes集群</span>
             </button>
             <button class="btn btn-primary" @click="$emit('navigate', 'nodes')">
               <span class="btn-icon">🖥️</span>
@@ -89,10 +85,6 @@
 // 定义组件的属性和事件
 const props = defineProps({
   kubeadmVersion: {
-    type: String,
-    default: ''
-  },
-  dockerVersion: {
     type: String,
     default: ''
   },

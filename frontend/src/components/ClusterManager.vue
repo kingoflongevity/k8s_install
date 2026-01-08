@@ -195,19 +195,20 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onActivated, onDeactivated } from 'vue'
 import axios from 'axios'
 
 // API 配置
 const apiClient = axios.create({
   baseURL: 'http://localhost:8080',
-  timeout: 60000 // 60秒超时
+  timeout: 300000 // 5分钟超时，适应Kubernetes组件安装的耗时过程
 })
 
 // 状态变量
 const isDeploying = ref(false)
 const deployLogs = ref('')
 const joinCommand = ref('')
+let logInterval = null
 
 // 部署配置
 const config = ref({
@@ -234,34 +235,47 @@ const initCluster = async () => {
   joinCommand.value = ''
 
   try {
+    // 获取主节点ID（这里假设第一个节点是主节点）
+    const nodesResponse = await apiClient.get('/nodes')
+    const masterNodes = nodesResponse.data.filter(node => node.nodeType === 'master' || node.nodeType === 'Master')
+    
+    if (masterNodes.length === 0) {
+      throw new Error('没有找到主节点，请先添加主节点并设置为主节点类型')
+    }
+    
+    const masterNodeId = masterNodes[0].id
+    
     const kubeadmConfig = {
-      apiVersion: 'kubeadm.k8s.io/v1beta3',
-      kind: 'InitConfiguration',
-      initConfiguration: {
-        localAPIEndpoint: {
-          advertiseAddress: config.value.advertiseAddress,
-          bindPort: 6443
+      masterNodeId: masterNodeId,
+      config: {
+        apiVersion: 'kubeadm.k8s.io/v1beta3',
+        kind: 'InitConfiguration',
+        initConfiguration: {
+          localAPIEndpoint: {
+            advertiseAddress: config.value.advertiseAddress,
+            bindPort: 6443
+          },
+          nodeRegistration: {
+            name: config.value.nodeName,
+            criSocket: config.value.criSocket
+          }
         },
-        nodeRegistration: {
-          name: config.value.nodeName,
-          criSocket: config.value.criSocket
-        }
-      },
-      clusterConfiguration: {
-        kubernetesVersion: config.value.kubernetesVersion,
-        controlPlaneEndpoint: config.value.controlPlaneEndpoint,
-        networking: {
-          podSubnet: config.value.podSubnet,
-          serviceSubnet: config.value.serviceSubnet,
-          dnsDomain: config.value.dnsDomain,
-          serviceNodePortRange: config.value.serviceNodePortRange
-        },
-        api: {
-          timeoutForControlPlane: config.value.timeoutForControlPlane
-        },
-        etcd: {
-          local: {
-            dataDir: config.value.etcdDataDir
+        clusterConfiguration: {
+          kubernetesVersion: config.value.kubernetesVersion,
+          controlPlaneEndpoint: config.value.controlPlaneEndpoint,
+          networking: {
+            podSubnet: config.value.podSubnet,
+            serviceSubnet: config.value.serviceSubnet,
+            dnsDomain: config.value.dnsDomain,
+            serviceNodePortRange: config.value.serviceNodePortRange
+          },
+          api: {
+            timeoutForControlPlane: config.value.timeoutForControlPlane
+          },
+          etcd: {
+            local: {
+              dataDir: config.value.etcdDataDir
+            }
           }
         }
       }
@@ -272,7 +286,7 @@ const initCluster = async () => {
     emit('showMessage', { text: '集群初始化成功!', type: 'success' })
 
     // 获取加入命令
-    await getJoinCommand()
+    await getJoinCommand(masterNodeId)
   } catch (error) {
     deployLogs.value = error.response?.data?.error || error.message
     emit('showMessage', { text: '集群初始化失败: ' + (error.response?.data?.error || error.message), type: 'error' })
@@ -292,7 +306,19 @@ const resetCluster = async () => {
   joinCommand.value = ''
 
   try {
-    const response = await apiClient.post('/kubeadm/reset')
+    // 获取主节点ID（这里假设第一个节点是主节点）
+    const nodesResponse = await apiClient.get('/nodes')
+    const masterNodes = nodesResponse.data.filter(node => node.nodeType === 'master' || node.nodeType === 'Master')
+    
+    if (masterNodes.length === 0) {
+      throw new Error('没有找到主节点，请先添加主节点并设置为主节点类型')
+    }
+    
+    const masterNodeId = masterNodes[0].id
+    
+    const response = await apiClient.post('/kubeadm/reset', {
+      masterNodeId: masterNodeId
+    })
     deployLogs.value = response.data.result
     emit('showMessage', { text: '集群重置成功!', type: 'success' })
   } catch (error) {
@@ -304,9 +330,13 @@ const resetCluster = async () => {
 }
 
 // 获取加入命令
-const getJoinCommand = async () => {
+const getJoinCommand = async (masterNodeId) => {
   try {
-    const response = await apiClient.get('/kubeadm/join-command')
+    const response = await apiClient.get('/kubeadm/join-command', {
+      params: {
+        masterNodeId: masterNodeId
+      }
+    })
     joinCommand.value = response.data.command
   } catch (error) {
     emit('showMessage', { text: '获取加入命令失败: ' + error.message, type: 'error' })
@@ -322,6 +352,54 @@ const copyJoinCommand = async () => {
     emit('showMessage', { text: '复制失败: ' + error.message, type: 'error' })
   }
 }
+
+// 获取并格式化部署日志
+const getDeployLogs = async () => {
+  try {
+    const response = await apiClient.get('/logs')
+    if (response.data.logs && response.data.logs.length > 0) {
+      // 只显示与Kubernetes部署相关的日志
+      const k8sLogs = response.data.logs.filter(log => 
+        log.operation.includes('Kubernetes') || 
+        log.operation.includes('kubeadm') ||
+        log.operation.includes('InstallKubernetesComponents')
+      )
+      
+      if (k8sLogs.length > 0) {
+        // 格式化日志
+        let logsText = ''
+        for (const log of k8sLogs.reverse()) {
+          logsText += `=== ${log.nodeName} - ${log.operation} ===\n`
+          logsText += `时间: ${new Date(log.createdAt).toLocaleString('zh-CN')}\n`
+          logsText += `状态: ${log.status}\n`
+          logsText += `命令: ${log.command}\n`
+          logsText += `输出: ${log.output}\n\n`
+        }
+        deployLogs.value = logsText
+      }
+    }
+  } catch (error) {
+      // 静默处理获取日志失败
+    }
+}
+
+// 组件激活时启动日志刷新定时器
+onActivated(() => {
+  getDeployLogs()
+  
+  // 每隔1秒刷新一次日志，实现实时效果
+  logInterval = setInterval(() => {
+    getDeployLogs()
+  }, 1000)
+})
+
+// 组件停用时清除日志刷新定时器
+onDeactivated(() => {
+  if (logInterval) {
+    clearInterval(logInterval)
+    logInterval = null
+  }
+})
 </script>
 
 <style scoped>

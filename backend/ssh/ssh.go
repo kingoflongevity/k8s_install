@@ -1,10 +1,13 @@
 package ssh
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
 	"io/ioutil"
+	"k8s-installer/log"
+	"strings"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -13,7 +16,28 @@ import (
 
 // SSHClient SSH客户端
 type SSHClient struct {
-	client *ssh.Client
+	client     *ssh.Client
+	logManager interface {
+		CreateLog(logEntry interface{}) error
+	}
+	nodeID   string
+	nodeName string
+}
+
+// OutputCallback 实时输出回调函数
+type OutputCallback func(line string)
+
+// SetLogManager 设置日志管理器
+func (c *SSHClient) SetLogManager(logManager interface {
+	CreateLog(logEntry interface{}) error
+}) {
+	c.logManager = logManager
+}
+
+// SetNodeInfo 设置节点信息
+func (c *SSHClient) SetNodeInfo(nodeID, nodeName string) {
+	c.nodeID = nodeID
+	c.nodeName = nodeName
 }
 
 // NewSSHClient 创建新的SSH客户端
@@ -63,7 +87,7 @@ func (c *SSHClient) Close() error {
 	return c.client.Close()
 }
 
-// RunCommand 执行SSH命令
+// RunCommand 执行SSH命令，并记录完整的执行日志到日志管理系统
 func (c *SSHClient) RunCommand(cmd string) (string, error) {
 	// 创建SSH会话
 	session, err := c.client.NewSession()
@@ -72,8 +96,8 @@ func (c *SSHClient) RunCommand(cmd string) (string, error) {
 	}
 	defer session.Close()
 
-	// 设置命令执行超时
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	// 设置命令执行超时（30分钟），适应Kubernetes组件安装的耗时过程
+	ctx, cancel := context.WithTimeout(context.Background(), 1800*time.Second)
 	defer cancel()
 
 	// 执行命令
@@ -81,15 +105,219 @@ func (c *SSHClient) RunCommand(cmd string) (string, error) {
 	session.Stdout = &stdout
 	session.Stderr = &stderr
 
+	// 记录命令开始执行的时间
+	executionStartTime := time.Now()
+
+	// 构建命令执行开始的日志
+	startLogEntry := log.LogEntry{
+		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
+		NodeID:    c.nodeID,
+		NodeName:  c.nodeName,
+		Operation: "SSHCommandExecution",
+		Command:   cmd,
+		Output:    "命令开始执行...",
+		Status:    "running",
+		CreatedAt: executionStartTime,
+		UpdatedAt: executionStartTime,
+	}
+
+	// 将开始日志写入日志管理系统
+	if c.logManager != nil {
+		c.logManager.CreateLog(startLogEntry)
+	}
+
 	err = session.Run(cmd)
+
+	// 记录命令执行结束的时间和耗时
+	executionEndTime := time.Now()
+	executionDuration := executionEndTime.Sub(executionStartTime)
+
+	// 构建完整的日志记录
+	logOutput := fmt.Sprintf("=== SSH命令执行日志 ===\n")
+	logOutput += fmt.Sprintf("命令: %s\n", cmd)
+	logOutput += fmt.Sprintf("开始时间: %s\n", executionStartTime.Format("2006-01-02 15:04:05"))
+	logOutput += fmt.Sprintf("结束时间: %s\n", executionEndTime.Format("2006-01-02 15:04:05"))
+	logOutput += fmt.Sprintf("执行耗时: %v\n", executionDuration)
+	logOutput += fmt.Sprintf("\n=== 标准输出 ===\n%s\n", stdout.String())
+	logOutput += fmt.Sprintf("=== 标准错误 ===\n%s\n", stderr.String())
+
+	// 打印完整日志到控制台
+	fmt.Println(logOutput)
+
+	// 构建命令执行结束的日志
+	status := "success"
+	if err != nil {
+		status = "failed"
+	}
+
+	endLogEntry := log.LogEntry{
+		ID:        startLogEntry.ID,
+		NodeID:    c.nodeID,
+		NodeName:  c.nodeName,
+		Operation: "SSHCommandExecution",
+		Command:   cmd,
+		Output:    logOutput,
+		Status:    status,
+		CreatedAt: executionStartTime,
+		UpdatedAt: executionEndTime,
+	}
+
+	// 将结束日志写入日志管理系统
+	if c.logManager != nil {
+		c.logManager.CreateLog(endLogEntry)
+	}
+
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("command timed out: %s", cmd)
+			return "", fmt.Errorf("command timed out after 30 minutes: %s\nStdout: %s\nStderr: %s", cmd, stdout.String(), stderr.String())
+		}
+		// 区分不同类型的错误
+		if exitErr, ok := err.(*ssh.ExitError); ok {
+			// 检查是否是信号中断
+			if exitErr.Signal() == "TERM" {
+				return "", fmt.Errorf("command was terminated by signal SIGTERM after 30 minutes: %s\nStdout: %s\nStderr: %s", cmd, stdout.String(), stderr.String())
+			}
+			return "", fmt.Errorf("command failed with exit code %d: %s\nStdout: %s\nStderr: %s", exitErr.ExitStatus(), cmd, stdout.String(), stderr.String())
 		}
 		return "", fmt.Errorf("command failed: %v\nStdout: %s\nStderr: %s", err, stdout.String(), stderr.String())
 	}
 
 	return stdout.String(), nil
+}
+
+// RunCommandWithOutput 执行SSH命令并实时输出结果
+func (c *SSHClient) RunCommandWithOutput(cmd string, callback OutputCallback) (string, error) {
+	// 创建SSH会话
+	session, err := c.client.NewSession()
+	if err != nil {
+		return "", fmt.Errorf("failed to create session: %v", err)
+	}
+	defer session.Close()
+
+	// 设置命令执行超时（30分钟）
+	ctx, cancel := context.WithTimeout(context.Background(), 1800*time.Second)
+	defer cancel()
+
+	// 获取会话的标准输出和标准错误
+	stdoutPipe, err := session.StdoutPipe()
+	if err != nil {
+		return "", fmt.Errorf("failed to get stdout pipe: %v", err)
+	}
+
+	stderrPipe, err := session.StderrPipe()
+	if err != nil {
+		return "", fmt.Errorf("failed to get stderr pipe: %v", err)
+	}
+
+	// 记录命令开始执行的时间
+	executionStartTime := time.Now()
+
+	// 构建命令执行开始的日志
+	startLogEntry := log.LogEntry{
+		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
+		NodeID:    c.nodeID,
+		NodeName:  c.nodeName,
+		Operation: "SSHCommandExecution",
+		Command:   cmd,
+		Output:    "命令开始执行...",
+		Status:    "running",
+		CreatedAt: executionStartTime,
+		UpdatedAt: executionStartTime,
+	}
+
+	// 将开始日志写入日志管理系统
+	if c.logManager != nil {
+		c.logManager.CreateLog(startLogEntry)
+	}
+
+	// 启动命令执行
+	err = session.Start(cmd)
+	if err != nil {
+		return "", fmt.Errorf("failed to start command: %v", err)
+	}
+
+	// 实时读取标准输出
+	var stdoutBuf strings.Builder
+	go func() {
+		scanner := bufio.NewScanner(stdoutPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			stdoutBuf.WriteString(line + "\n")
+			callback(line)
+		}
+	}()
+
+	// 实时读取标准错误
+	var stderrBuf strings.Builder
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			stderrBuf.WriteString(line + "\n")
+			callback(line)
+		}
+	}()
+
+	// 等待命令执行完成
+	err = session.Wait()
+	stdout := stdoutBuf.String()
+	stderr := stderrBuf.String()
+
+	// 记录命令执行结束的时间和耗时
+	executionEndTime := time.Now()
+	executionDuration := executionEndTime.Sub(executionStartTime)
+
+	// 构建完整的日志记录
+	logOutput := fmt.Sprintf("=== SSH命令执行日志 ===\n")
+	logOutput += fmt.Sprintf("命令: %s\n", cmd)
+	logOutput += fmt.Sprintf("开始时间: %s\n", executionStartTime.Format("2006-01-02 15:04:05"))
+	logOutput += fmt.Sprintf("结束时间: %s\n", executionEndTime.Format("2006-01-02 15:04:05"))
+	logOutput += fmt.Sprintf("执行耗时: %v\n", executionDuration)
+	logOutput += fmt.Sprintf("\n=== 标准输出 ===\n%s\n", stdout)
+	logOutput += fmt.Sprintf("=== 标准错误 ===\n%s\n", stderr)
+
+	// 打印完整日志到控制台
+	fmt.Println(logOutput)
+
+	// 构建命令执行结束的日志
+	status := "success"
+	if err != nil {
+		status = "failed"
+	}
+
+	endLogEntry := log.LogEntry{
+		ID:        startLogEntry.ID,
+		NodeID:    c.nodeID,
+		NodeName:  c.nodeName,
+		Operation: "SSHCommandExecution",
+		Command:   cmd,
+		Output:    logOutput,
+		Status:    status,
+		CreatedAt: executionStartTime,
+		UpdatedAt: executionEndTime,
+	}
+
+	// 将结束日志写入日志管理系统
+	if c.logManager != nil {
+		c.logManager.CreateLog(endLogEntry)
+	}
+
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return stdout, fmt.Errorf("command timed out after 30 minutes: %s\nStdout: %s\nStderr: %s", cmd, stdout, stderr)
+		}
+		// 区分不同类型的错误
+		if exitErr, ok := err.(*ssh.ExitError); ok {
+			// 检查是否是信号中断
+			if exitErr.Signal() == "TERM" {
+				return stdout, fmt.Errorf("command was terminated by signal SIGTERM after 30 minutes: %s\nStdout: %s\nStderr: %s", cmd, stdout, stderr)
+			}
+			return stdout, fmt.Errorf("command failed with exit code %d: %s\nStdout: %s\nStderr: %s", exitErr.ExitStatus(), cmd, stdout, stderr)
+		}
+		return stdout, fmt.Errorf("command failed: %v\nStdout: %s\nStderr: %s", err, stdout, stderr)
+	}
+
+	return stdout, nil
 }
 
 // UploadFile 上传文件到远程服务器

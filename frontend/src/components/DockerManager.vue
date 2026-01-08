@@ -252,13 +252,13 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, watch } from 'vue'
 import axios from 'axios'
 
 // API 配置
 const apiClient = axios.create({
   baseURL: 'http://localhost:8080',
-  timeout: 60000 // 60秒超时
+  timeout: 300000 // 5分钟超时，适应Kubernetes组件安装的耗时过程
 })
 
 // 状态变量
@@ -380,7 +380,7 @@ const installDocker = async () => {
         }
       }
     } catch (error) {
-      console.error('获取日志失败:', error)
+      // 静默处理获取日志失败
     }
   }, 1000) // 每秒轮询一次
 
@@ -487,7 +487,7 @@ const configureDocker = async () => {
         }
       }
     } catch (error) {
-      console.error('获取日志失败:', error)
+      // 静默处理获取日志失败
     }
   }, 1000) // 每秒轮询一次
 
@@ -586,7 +586,7 @@ const startDocker = async () => {
         }
       }
     } catch (error) {
-      console.error('获取日志失败:', error)
+      // 静默处理获取日志失败
     }
   }, 1000) // 每秒轮询一次
 
@@ -682,7 +682,7 @@ const stopDocker = async () => {
         }
       }
     } catch (error) {
-      console.error('获取日志失败:', error)
+      // 静默处理获取日志失败
     }
   }, 1000) // 每秒轮询一次
 
@@ -778,7 +778,7 @@ const checkDockerStatus = async () => {
         }
       }
     } catch (error) {
-      console.error('获取日志失败:', error)
+      // 静默处理获取日志失败
     }
   }, 1000) // 每秒轮询一次
 
@@ -872,7 +872,7 @@ const enableDocker = async () => {
         }
       }
     } catch (error) {
-      console.error('获取日志失败:', error)
+      // 静默处理获取日志失败
     }
   }, 1000) // 每秒轮询一次
 
@@ -968,7 +968,7 @@ const disableDocker = async () => {
         }
       }
     } catch (error) {
-      console.error('获取日志失败:', error)
+      // 静默处理获取日志失败
     }
   }, 1000) // 每秒轮询一次
 
@@ -1069,7 +1069,7 @@ const removeDocker = async () => {
         }
       }
     } catch (error) {
-      console.error('获取日志失败:', error)
+      // 静默处理获取日志失败
     }
   }, 1000) // 每秒轮询一次
 
@@ -1142,6 +1142,12 @@ const formatDate = (dateString) => {
 
 // 页面加载时获取节点列表和Docker版本
 onMounted(() => {
+  getNodes()
+  getDockerVersions()
+})
+
+// 组件激活时刷新数据
+onActivated(() => {
   getNodes()
   getDockerVersions()
 })

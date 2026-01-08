@@ -50,18 +50,19 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, onActivated, onDeactivated, watch } from 'vue'
 import axios from 'axios'
 
 // API 配置
 const apiClient = axios.create({
   baseURL: 'http://localhost:8080',
-  timeout: 60000 // 60秒超时
+  timeout: 300000 // 5分钟超时，适应Kubernetes组件安装的耗时过程
 })
 
 // 状态变量
 const logs = ref([])
 const expandedLogs = ref([])
+let logInterval = null
 
 // 定义组件的事件
 const emit = defineEmits(['showMessage'])
@@ -72,7 +73,8 @@ const getLogs = async () => {
     const response = await apiClient.get('/logs')
     logs.value = response.data.logs || []
   } catch (error) {
-    emit('showMessage', { text: '获取日志失败: ' + (error.response?.data?.error || error.message), type: 'error' })
+    // 静默处理日志API错误，不显示用户错误信息
+    logs.value = []
   }
 }
 
@@ -87,7 +89,8 @@ const clearLogs = async () => {
     logs.value = []
     emit('showMessage', { text: '日志已清除!', type: 'success' })
   } catch (error) {
-    emit('showMessage', { text: '清除日志失败: ' + (error.response?.data?.error || error.message), type: 'error' })
+    // 静默处理清除日志错误，不显示用户错误信息
+    logs.value = []
   }
 }
 
@@ -117,16 +120,24 @@ const formatDate = (dateString) => {
 // 页面加载时获取日志
 onMounted(() => {
   getLogs()
+})
+
+// 组件激活时启动日志刷新定时器
+onActivated(() => {
+  getLogs()
   
-  // 每隔5秒刷新一次日志
-  const interval = setInterval(() => {
+  // 每隔1秒刷新一次日志，实现实时效果
+  logInterval = setInterval(() => {
     getLogs()
-  }, 5000)
-  
-  // 组件卸载时清除定时器
-  onUnmounted(() => {
-    clearInterval(interval)
-  })
+  }, 1000)
+})
+
+// 组件停用时清除日志刷新定时器
+onDeactivated(() => {
+  if (logInterval) {
+    clearInterval(logInterval)
+    logInterval = null
+  }
 })
 </script>
 
@@ -197,10 +208,12 @@ onMounted(() => {
 .log-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   margin-bottom: 10px;
   flex-wrap: wrap;
   gap: 10px;
+  min-height: 40px;
+  align-content: center;
 }
 
 /* 日志元数据 */
@@ -209,18 +222,26 @@ onMounted(() => {
   gap: 15px;
   flex-wrap: wrap;
   align-items: center;
+  flex: 1;
+  min-width: 0;
 }
 
 .log-node {
   font-weight: 600;
   color: var(--primary-color);
   font-size: 0.95rem;
+  flex-shrink: 0;
 }
 
 .log-operation {
   font-weight: 500;
   color: var(--text-primary);
   font-size: 0.9rem;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .log-status {
@@ -229,6 +250,7 @@ onMounted(() => {
   font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
+  flex-shrink: 0;
 }
 
 .log-status.success {
@@ -244,6 +266,7 @@ onMounted(() => {
 .log-time {
   color: var(--text-muted);
   font-size: 0.8rem;
+  flex-shrink: 0;
 }
 
 /* 日志切换按钮 */
@@ -256,6 +279,96 @@ onMounted(() => {
   cursor: pointer;
   transition: all 0.3s ease;
   color: var(--text-primary);
+  min-width: 60px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  /* 日志项 */
+  .log-item {
+    padding: 10px;
+  }
+  
+  /* 日志元数据 */
+  .log-meta {
+    gap: 10px;
+  }
+  
+  /* 日志节点名 */
+  .log-node {
+    font-size: 0.85rem;
+  }
+  
+  /* 日志操作 */
+  .log-operation {
+    font-size: 0.8rem;
+  }
+  
+  /* 日志状态 */
+  .log-status {
+    font-size: 0.7rem;
+    padding: 2px 6px;
+  }
+  
+  /* 日志时间 */
+  .log-time {
+    font-size: 0.75rem;
+    flex: 1 100%;
+    text-align: right;
+  }
+  
+  /* 日志内容 */
+  .log-content {
+    gap: 8px;
+  }
+  
+  /* 日志命令 */
+  .log-command {
+    font-size: 0.8rem;
+    padding: 6px 10px;
+  }
+  
+  /* 日志输出 */
+  .log-output {
+    font-size: 0.75rem;
+    padding: 10px;
+    max-height: 200px;
+  }
+  
+  /* 日志切换按钮 */
+  .log-toggle {
+    padding: 5px 10px;
+    font-size: 0.75rem;
+    min-width: 50px;
+  }
+  
+  /* 日志容器 */
+  .logs-container {
+    padding: 5px;
+    max-height: 500px;
+  }
+  
+  /* 日志列表间隙 */
+  .logs-list {
+    gap: 10px;
+  }
+  
+  /* 日志管理区域 */
+  .log-manager {
+    padding: 15px;
+  }
+  
+  /* 日志标题 */
+  .logs-section h3 {
+    margin-bottom: 15px;
+  }
+  
+  /* 日志控制按钮 */
+  .logs-controls {
+    margin-bottom: 15px;
+  }
 }
 
 .log-toggle:hover {
