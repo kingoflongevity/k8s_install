@@ -657,38 +657,86 @@ fi`
 	// 默认containerd配置脚本
 	latestDefaultScripts["containerd_config"] = `# containerd配置脚本
 echo "=== 配置并启动containerd ==="
-# 确保containerd配置目录存在
-sudo mkdir -p /etc/containerd
 
-# 生成默认配置，覆盖现有配置以确保正确性
-echo "生成containerd默认配置..."
+# 1. 确保containerd配置目录存在
+echo "1. 确保containerd配置目录存在..."
+sudo mkdir -p /etc/containerd /run/containerd /var/lib/containerd
+
+# 2. 生成默认配置，覆盖现有配置以确保正确性
+echo "2. 生成containerd默认配置..."
 sudo containerd config default | sudo tee /etc/containerd/config.toml
 
-# 确保使用systemd cgroup驱动
+# 3. 确保使用systemd cgroup驱动
+echo "3. 配置systemd cgroup驱动..."
 sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
 
-# 启动前先停止可能运行的containerd进程
-echo "停止可能运行的containerd进程..."
+# 4. 确保containerd服务文件存在
+echo "4. 确保containerd服务文件存在..."
+if [ ! -f /etc/systemd/system/containerd.service ]; then
+    echo "创建containerd服务文件..."
+    sudo cat > /etc/systemd/system/containerd.service <<-'EOF'
+[Unit]
+Description=containerd container runtime
+Documentation=https://containerd.io
+After=network.target local-fs.target
+
+[Service]
+ExecStartPre=-/sbin/modprobe overlay
+ExecStart=/usr/bin/containerd
+Restart=always
+RestartSec=5
+Delegate=yes
+KillMode=process
+OOMScoreAdjust=-999
+LimitNOFILE=1048576
+LimitNPROC=infinity
+LimitCORE=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
+fi
+
+# 5. 检查containerd二进制文件位置
+echo "5. 检查containerd二进制文件位置..."
+if [ ! -f /usr/bin/containerd ]; then
+    # 查找containerd二进制文件
+    containerd_path=$(which containerd 2>/dev/null || echo "/usr/local/bin/containerd")
+    echo "containerd二进制文件位置: $containerd_path"
+    
+    # 如果在/usr/local/bin，创建符号链接到/usr/bin
+    if [ "$containerd_path" = "/usr/local/bin/containerd" ] && [ ! -f /usr/bin/containerd ]; then
+        echo "创建containerd符号链接..."
+        sudo ln -sf $containerd_path /usr/bin/containerd
+        # 也创建ctr的符号链接
+        if [ -f /usr/local/bin/ctr ]; then
+            sudo ln -sf /usr/local/bin/ctr /usr/bin/ctr
+        fi
+    fi
+fi
+
+# 6. 启动前先停止可能运行的containerd进程
+echo "6. 停止可能运行的containerd进程..."
 sudo pkill -f containerd || true
 sleep 2
 
-# 清理旧的containerd socket和状态文件
-echo "清理旧的containerd socket和状态文件..."
-sudo rm -f /run/containerd/containerd.sock
-sudo rm -rf /var/run/containerd
-sudo mkdir -p /var/run/containerd
+# 7. 清理旧的containerd socket和状态文件
+echo "7. 清理旧的containerd socket和状态文件..."
+sudo rm -rf /run/containerd /var/run/containerd /var/lib/containerd/*
+sudo mkdir -p /run/containerd /var/run/containerd /var/lib/containerd
 
-# 启动并启用containerd服务
-echo "启动containerd服务..."
+# 8. 启动并启用containerd服务
+echo "8. 启动containerd服务..."
 sudo systemctl daemon-reload
-sudo systemctl restart containerd
 sudo systemctl enable containerd
+# 使用--now参数确保立即启动
+sudo systemctl restart containerd
 
-# 等待containerd启动，增加等待时间
-echo "等待containerd启动..."
-sleep 10
+# 9. 等待containerd启动，增加等待时间
+echo "9. 等待containerd启动..."
+sleep 15
 
-# 检查containerd状态
+# 10. 检查containerd状态
 echo "=== 检查containerd状态 ==="
 if command -v systemctl &> /dev/null; then
     systemctl_status=$(sudo systemctl is-active containerd)
@@ -697,34 +745,85 @@ if command -v systemctl &> /dev/null; then
     # 显示containerd服务详细状态
     echo "containerd服务详细状态:"
     sudo systemctl status containerd --no-pager
+    
+    # 如果服务未运行，显示日志并尝试修复
+    if [ "$systemctl_status" != "active" ]; then
+        echo "=== 显示containerd错误日志 ==="
+        sudo journalctl -u containerd --no-pager -n 50
+        
+        echo "=== 尝试修复containerd配置 ==="
+        # 重新生成配置
+        sudo containerd config default | sudo tee /etc/containerd/config.toml
+        sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
+        # 再次启动
+        sudo systemctl restart containerd
+        sleep 10
+        # 再次检查状态
+        systemctl_status=$(sudo systemctl is-active containerd)
+        echo "修复后containerd服务状态: $systemctl_status"
+    fi
 fi
 
-# 检查containerd socket是否存在
+# 11. 检查containerd socket是否存在
 echo "=== 检查containerd socket ==="
 cri_socket="/run/containerd/containerd.sock"
+attempt=1
+max_attempts=3
+while [ ! -S "$cri_socket" ] && [ $attempt -le $max_attempts ]; do
+    echo "$attempt/$max_attempts: CRI socket $cri_socket 不存在，尝试手动启动containerd..."
+    
+    # 停止可能存在的containerd进程
+    sudo pkill -f containerd || true
+    sleep 2
+    
+    # 清理旧的socket和状态文件
+    sudo rm -rf /run/containerd /var/run/containerd /var/lib/containerd/*
+    sudo mkdir -p /run/containerd /var/run/containerd /var/lib/containerd
+    
+    # 手动启动containerd
+    echo "手动启动containerd..."
+    containerd --version
+    # 使用nohup确保containerd在后台运行
+    nohup sudo containerd > /tmp/containerd.log 2>&1 &
+    CONTAINERD_PID=$!
+    echo "containerd进程ID: $CONTAINERD_PID"
+    
+    # 等待10秒让containerd启动
+    sleep 10
+    
+    # 检查socket
+    if [ -S "$cri_socket" ]; then
+        echo "✓ 手动启动成功，CRI socket $cri_socket 已创建"
+        break
+    else
+        echo "✗ 手动启动失败，CRI socket $cri_socket 仍不存在"
+        echo "=== 显示containerd手动启动日志 ==="
+        cat /tmp/containerd.log | head -n 50
+        # 杀死可能的进程
+        sudo kill -9 $CONTAINERD_PID 2>/dev/null || true
+        sleep 2
+        attempt=$((attempt + 1))
+    fi
+done
+
+# 12. 测试containerd连接
+echo "=== 测试containerd连接 ==="
 if [ -S "$cri_socket" ]; then
     echo "CRI socket $cri_socket 存在"
     # 测试socket连接
     echo "测试containerd连接..."
     if command -v ctr &> /dev/null; then
         ctr version
+    elif [ -f /usr/local/bin/ctr ]; then
+        /usr/local/bin/ctr version
+    else
+        echo "无法找到ctr命令，跳过连接测试"
     fi
 else
-    echo "警告: CRI socket $cri_socket 不存在，检查containerd日志..."
-    sudo journalctl -u containerd --no-pager -n 30
-    
-    # 尝试手动启动containerd
-    echo "尝试手动启动containerd..."
-    containerd --version
-    containerd &
-    sleep 5
-    
-    # 再次检查socket
-    if [ -S "$cri_socket" ]; then
-        echo "手动启动成功，CRI socket $cri_socket 现在存在"
-    else
-        echo "手动启动失败，CRI socket $cri_socket 仍然不存在"
-    fi
+    echo "✗ 最终失败: CRI socket $cri_socket 仍然不存在"
+    echo "=== 显示最终containerd日志 ==="
+    sudo journalctl -u containerd --no-pager -n 100
+    exit 1
 fi`
 
 	// 添加Kubernetes组件安装脚本
