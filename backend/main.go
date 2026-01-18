@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"k8s-installer/kubeadm"
 	"k8s-installer/log"
 	"k8s-installer/node"
@@ -1735,12 +1734,6 @@ func main() {
 		c.Writer.Header().Set("Cache-Control", "no-cache")
 		c.Writer.Header().Set("Connection", "keep-alive")
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "*")
-
-		// 立即发送一个心跳事件，确认连接建立
-		fmt.Fprintf(c.Writer, "data: {\"type\": \"heartbeat\", \"message\": \"连接已建立\"}\n\n")
-		c.Writer.(http.Flusher).Flush()
 
 		// 获取日志管理器
 		logManager := nodeManager.GetLogManager()
@@ -1792,27 +1785,26 @@ func main() {
 		}
 
 		// 客户端断开连接时关闭通道
-		c.Stream(func(w io.Writer) bool {
+		for {
 			select {
-			case logEntry := <-logChan:
-				// 将日志格式化为SSE格式
-				logJSON, err := json.Marshal(logEntry)
-				if err != nil {
-					return true
-				}
-				fmt.Fprintf(w, "data: %s\n\n", logJSON)
-				c.Writer.(http.Flusher).Flush()
-				return true
 			case <-c.Request.Context().Done():
 				// 客户端断开连接
-				return false
+				return
+			case logEntry := <-logChan:
+				// 直接发送LogEntry，不包装
+				logJSON, err := json.Marshal(logEntry)
+				if err != nil {
+					continue
+				}
+				// 使用标准SSE格式
+				fmt.Fprintf(c.Writer, "data: %s\n\n", logJSON)
+				c.Writer.(http.Flusher).Flush()
 			case <-time.After(60 * time.Second):
 				// 60秒内没有日志，发送一个心跳事件，保持连接活跃
-				fmt.Fprintf(w, "data: {\"type\": \"heartbeat\", \"message\": \"连接保持活跃\"}\n\n")
+				fmt.Fprintf(c.Writer, "data: {\"type\": \"heartbeat\"}\n\n")
 				c.Writer.(http.Flusher).Flush()
-				return true
 			}
-		})
+		}
 	})
 
 	// 系统脚本管理API端点

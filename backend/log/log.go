@@ -52,6 +52,11 @@ type SqliteLogManager struct {
 	subscribers         map[string]chan LogEntry
 	mutex               sync.RWMutex
 	broadcastChanClosed bool
+	// 日志缓冲相关字段
+	logBuffer           map[string]LogEntry // 按节点+操作+命令分组的日志缓冲
+	bufferMutex         sync.Mutex          // 缓冲锁
+	bufferFlushInterval time.Duration       // 缓冲刷新间隔
+	flushTicker         *time.Ticker        // 缓冲刷新定时器
 }
 
 // NewSqliteLogManager 创建新的SQLite日志管理器
@@ -105,12 +110,54 @@ func NewSqliteLogManager(db *sql.DB) (*SqliteLogManager, error) {
 		broadcastChan:       broadcastChan,
 		subscribers:         make(map[string]chan LogEntry),
 		broadcastChanClosed: false,
+		// 初始化日志缓冲
+		logBuffer:           make(map[string]LogEntry),
+		bufferFlushInterval: 1 * time.Second, // 每秒刷新一次缓冲
 	}
 
 	// 启动广播协程
 	go manager.broadcastLogs()
+	// 启动日志缓冲刷新协程
+	go manager.startLogBuffer()
 
 	return manager, nil
+}
+
+// startLogBuffer 启动日志缓冲刷新定时器
+func (m *SqliteLogManager) startLogBuffer() {
+	m.flushTicker = time.NewTicker(m.bufferFlushInterval)
+	defer m.flushTicker.Stop()
+
+	for {
+		select {
+		case <-m.flushTicker.C:
+			m.flushLogBuffer()
+		}
+	}
+}
+
+// flushLogBuffer 刷新日志缓冲，合并并发送缓冲的日志
+func (m *SqliteLogManager) flushLogBuffer() {
+	m.bufferMutex.Lock()
+	defer m.bufferMutex.Unlock()
+
+	// 如果缓冲为空，直接返回
+	if len(m.logBuffer) == 0 {
+		return
+	}
+
+	// 将缓冲中的日志发送到广播通道
+	for _, logEntry := range m.logBuffer {
+		select {
+		case m.broadcastChan <- logEntry:
+			// 日志发送成功到广播通道
+		default:
+			// 广播通道已满，跳过此日志以避免阻塞
+		}
+	}
+
+	// 清空缓冲
+	m.logBuffer = make(map[string]LogEntry)
 }
 
 // broadcastLogs 广播日志到所有订阅者
@@ -215,12 +262,28 @@ func (m *SqliteLogManager) CreateLog(log LogEntry) error {
 		)
 	}
 
-	// 将日志发送到广播通道，由broadcastLogs协程处理
-	select {
-	case m.broadcastChan <- log:
-		// 日志发送成功到广播通道
-	default:
-		// 广播通道已满，跳过此日志以避免阻塞
+	// 日志缓冲逻辑：将日志添加到缓冲中，按节点+操作+命令分组
+	m.bufferMutex.Lock()
+	defer m.bufferMutex.Unlock()
+
+	// 生成缓冲键：节点ID + 操作 + 命令
+	bufferKey := fmt.Sprintf("%s_%s_%s", log.NodeID, log.Operation, log.Command)
+
+	// 检查是否已存在该分组的日志
+	if existingLog, exists := m.logBuffer[bufferKey]; exists {
+		// 合并日志输出
+		existingLog.Output += "\n" + log.Output
+		// 更新状态（只有最终状态会覆盖，running状态不会覆盖success或failed）
+		if log.Status == "success" || log.Status == "failed" {
+			existingLog.Status = log.Status
+		}
+		// 更新时间
+		existingLog.UpdatedAt = log.UpdatedAt
+		// 更新回缓冲
+		m.logBuffer[bufferKey] = existingLog
+	} else {
+		// 新的日志分组，直接添加到缓冲
+		m.logBuffer[bufferKey] = log
 	}
 
 	return err

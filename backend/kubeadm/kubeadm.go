@@ -3631,9 +3631,139 @@ echo "生成的Join命令："
 sudo kubeadm token create --print-join-command
     
     # 安装CNI网络插件（使用Calico）
-echo "=== 安装Calico网络插件 ==="
+    echo "=== 安装Calico网络插件 ==="
 if [ -f $HOME/.kube/config ]; then
-    kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+    # 下载Calico配置文件
+    echo "=== 下载Calico配置文件 ==="
+    curl -O https://docs.projectcalico.org/manifests/calico.yaml
+    
+    # 修改Calico的IPPool配置，使其与kubeadm的PodCIDR一致
+    echo "=== 修改Calico IPPool配置 ==="
+    POD_CIDR="%s"
+    echo "当前kubeadm PodCIDR: $POD_CIDR"
+    
+    # 1. 修改默认IPPool网段
+    sed -i "s|192.168.0.0/16|$POD_CIDR|g" calico.yaml
+    
+    # 2. 确保Calico使用正确的网段配置
+    # 检查是否有其他IPPool配置需要修改
+    echo "=== 检查Calico配置文件中的所有IPPool配置 ==="
+    grep -n "cidr:" calico.yaml
+    
+    # 3. 修改Calico Felix配置，确保它使用正确的网段
+    sed -i "s|192.168.0.0/16|$POD_CIDR|g" calico.yaml
+    
+    # 4. 确保Calico IPAM配置正确
+    echo "=== 检查Calico IPAM配置 ==="
+    grep -A 10 "ipam" calico.yaml
+    
+    # 查看修改后的Calico配置文件中的IPPool配置
+    echo "=== 查看修改后的Calico IPPool配置 ==="
+    grep -A 20 "ippools" calico.yaml
+    
+    # 应用修改后的Calico配置
+    echo "=== 应用修改后的Calico配置 ==="
+    kubectl apply -f calico.yaml
+    
+    # 等待Calico部署完成
+    echo "=== 等待Calico部署完成（60秒） ==="
+    sleep 60
+    
+    # 验证Calico Pod状态
+    echo "=== 验证Calico Pod状态 ==="
+    kubectl get pods -n calico-system -o wide
+    
+    # 查看Calico关键Pod的详细日志
+    echo "=== 查看Calico节点Pod日志 ==="
+    CALICO_NODE_POD=$(kubectl get pods -n calico-system -l k8s-app=calico-node -o jsonpath='{.items[0].metadata.name}')
+    if [ -n "$CALICO_NODE_POD" ]; then
+        kubectl logs -n calico-system $CALICO_NODE_POD --tail=50
+    fi
+    
+    # 确保CNI配置目录存在
+    echo "=== 确保CNI配置目录存在 ==="
+    sudo mkdir -p /etc/cni/net.d
+    
+    # 等待Calico自动创建CNI配置文件
+    echo "=== 等待Calico创建CNI配置文件（30秒） ==="
+    sleep 30
+    
+    # 查看CNI配置文件
+    echo "=== 查看CNI配置文件 ==="
+    ls -la /etc/cni/net.d/
+    
+    # 如果CNI配置文件不存在，手动创建基本配置
+    if [ ! -f /etc/cni/net.d/calico.conflist ]; then
+        echo "=== CNI配置文件不存在，手动创建 ==="
+        # 检查是否存在其他Calico配置文件
+        CALICO_CONFIG=$(ls /etc/cni/net.d/*calico* 2>/dev/null)
+        if [ -z "$CALICO_CONFIG" ]; then
+            # 创建基本的Calico CNI配置
+            sudo cat > /etc/cni/net.d/10-calico.conflist << EOF
+{
+  "name": "k8s-pod-network",
+  "cniVersion": "0.3.1",
+  "plugins": [
+    {
+      "type": "calico",
+      "log_level": "info",
+      "datastore_type": "kubernetes",
+      "nodename": "$(hostname)",
+      "mtu": 1440,
+      "ipam": {
+        "type": "calico-ipam"
+      },
+      "policy": {
+        "type": "k8s"
+      },
+      "kubernetes": {
+        "kubeconfig": "/etc/kubernetes/kubelet.conf"
+      }
+    },
+    {
+      "type": "portmap",
+      "capabilities": {
+        "portMappings": true
+      }
+    },
+    {
+      "type": "bandwidth",
+      "capabilities": {
+        "bandwidth": true
+      }
+    }
+  ]
+}
+EOF
+            echo "=== 手动创建CNI配置文件成功 ==="
+        else
+            echo "=== 发现其他Calico配置文件：$CALICO_CONFIG ==="
+            cat $CALICO_CONFIG
+        fi
+    else
+        echo "=== CNI配置文件已存在：/etc/cni/net.d/calico.conflist ==="
+        cat /etc/cni/net.d/calico.conflist
+    fi
+    
+    # 重启kubelet服务，确保CNI配置生效
+    echo "=== 重启kubelet服务 ==="
+    sudo systemctl restart kubelet
+    
+    # 等待kubelet重启完成
+    echo "=== 等待kubelet重启完成（30秒） ==="
+    sleep 30
+    
+    # 验证节点状态
+    echo "=== 验证节点状态 ==="
+    kubectl get nodes
+    
+    # 查看节点详细信息，特别是CNI相关的事件
+    echo "=== 查看节点详细信息 ==="
+    kubectl describe node $(hostname)
+    
+    # 查看kubelet日志，查找CNI相关错误
+    echo "=== 查看kubelet日志（最后100行） ==="
+    journalctl -u kubelet --no-pager -n 100 | grep -i cni
 else
     echo "无法安装CNI插件，kubectl配置失败"
 fi
@@ -3642,7 +3772,7 @@ else
     echo "显示kubeadm日志："
     sudo journalctl -u kubelet --no-pager -n 50
 fi
-`, config.ClusterConfiguration.KubernetesVersion, config.InitConfiguration.NodeRegistration.CRISocket, config.ClusterConfiguration.Networking.PodSubnet, config.ClusterConfiguration.KubernetesVersion, config.InitConfiguration.NodeRegistration.CRISocket, config.ClusterConfiguration.Networking.PodSubnet)
+`, config.ClusterConfiguration.KubernetesVersion, config.InitConfiguration.NodeRegistration.CRISocket, config.ClusterConfiguration.Networking.PodSubnet, config.ClusterConfiguration.KubernetesVersion, config.InitConfiguration.NodeRegistration.CRISocket, config.ClusterConfiguration.Networking.PodSubnet, config.ClusterConfiguration.Networking.PodSubnet)
 	} else {
 		cmd += `# 跳过Master节点初始化步骤
 echo "=== 跳过Master节点初始化步骤 ==="

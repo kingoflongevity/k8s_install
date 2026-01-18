@@ -851,21 +851,30 @@ const initSSE = () => {
 
 // 处理SSE消息
 const handleSSEMessage = (message) => {
+  // 检查是否为心跳消息
+  if (message && message.type === 'heartbeat') {
+    // 心跳消息，不处理
+    return
+  }
+  
+  // 如果是包装后的日志消息，使用message中的日志字段
+  const logEntry = message.type === 'log' ? message : message
+  
   // 后端发送的是log.LogEntry类型，直接使用日志信息
-  if (message) {
+  if (logEntry) {
     // 处理各种类型的日志消息
-    if (message.Operation === 'DeployK8sCluster' || message.Operation === 'InitMaster' || 
-        message.Operation === 'JoinWorker' || message.Operation === 'InstallKubernetesComponents' ||
-        message.Operation === 'SSHCommandExecution') {
+    if (logEntry.operation === 'DeployK8sCluster' || logEntry.operation === 'InitMaster' || 
+        logEntry.operation === 'JoinWorker' || logEntry.operation === 'InstallKubernetesComponents' ||
+        logEntry.operation === 'SSHCommandExecution') {
       // 标准日志消息
-      const timestamp = message.CreatedAt ? new Date(message.CreatedAt).toLocaleString() : new Date().toLocaleString()
-      deployLogs.value += `[${timestamp}] [${message.NodeName || message.NodeID}] ${message.Operation}: ${message.Command || ''}\n`
-      deployLogs.value += `${message.Output || ''}\n`
-      deployLogs.value += `状态: ${message.Status === 'success' ? '成功' : message.Status === 'failed' ? '失败' : '运行中'}\n\n`
+      const timestamp = logEntry.createdAt ? new Date(logEntry.createdAt).toLocaleString() : new Date().toLocaleString()
+      deployLogs.value += `[${timestamp}] [${logEntry.nodeName || logEntry.nodeId}] ${logEntry.operation}: ${logEntry.command || ''}\n`
+      deployLogs.value += `${logEntry.output || ''}\n`
+      deployLogs.value += `状态: ${logEntry.status === 'success' ? '成功' : logEntry.status === 'failed' ? '失败' : '运行中'}\n\n`
       
       // 更新部署状态
-      const nodeType = message.NodeID in selectedNodes.value ? selectedNodes.value[message.NodeID] : 
-                      message.Operation.includes('Master') ? 'master' : 'worker'
+      const nodeType = logEntry.nodeId in selectedNodes.value ? selectedNodes.value[logEntry.nodeId] : 
+                      logEntry.operation.includes('Master') ? 'master' : 'worker'
       
       const statusMap = {
         'success': 'completed',
@@ -874,25 +883,25 @@ const handleSSEMessage = (message) => {
       }
       
       if (nodeType === 'master') {
-        deploymentStatus.value.master[message.NodeID] = statusMap[message.Status] || 'deploying'
-        if (message.Status === 'running') {
-          deploymentProgress.value.master[message.NodeID] = Math.min((deploymentProgress.value.master[message.NodeID] || 0) + 15, 90)
-        } else if (message.Status === 'success') {
-          deploymentProgress.value.master[message.NodeID] = 100
+        deploymentStatus.value.master[logEntry.nodeId] = statusMap[logEntry.status] || 'deploying'
+        if (logEntry.status === 'running') {
+          deploymentProgress.value.master[logEntry.nodeId] = Math.min((deploymentProgress.value.master[logEntry.nodeId] || 0) + 15, 90)
+        } else if (logEntry.status === 'success') {
+          deploymentProgress.value.master[logEntry.nodeId] = 100
         }
       } else if (nodeType === 'worker') {
-        deploymentStatus.value.worker[message.NodeID] = statusMap[message.Status] || 'deploying'
-        if (message.Status === 'running') {
-          deploymentProgress.value.worker[message.NodeID] = Math.min((deploymentProgress.value.worker[message.NodeID] || 0) + 15, 90)
-        } else if (message.Status === 'success') {
-          deploymentProgress.value.worker[message.NodeID] = 100
+        deploymentStatus.value.worker[logEntry.nodeId] = statusMap[logEntry.status] || 'deploying'
+        if (logEntry.status === 'running') {
+          deploymentProgress.value.worker[logEntry.nodeId] = Math.min((deploymentProgress.value.worker[logEntry.nodeId] || 0) + 15, 90)
+        } else if (logEntry.status === 'success') {
+          deploymentProgress.value.worker[logEntry.nodeId] = 100
         }
       }
       
       // 如果是JoinWorker操作成功，自动更新状态
-      if (message.Operation === 'JoinWorker' && message.Status === 'success') {
-        deploymentStatus.value.worker[message.NodeID] = 'completed'
-        deploymentProgress.value.worker[message.NodeID] = 100
+      if (logEntry.operation === 'JoinWorker' && logEntry.status === 'success') {
+        deploymentStatus.value.worker[logEntry.nodeId] = 'completed'
+        deploymentProgress.value.worker[logEntry.nodeId] = 100
         
         // 检查所有工作节点是否都已部署完成
         const allWorkersCompleted = Object.values(deploymentStatus.value.worker).every(status => status === 'completed')
@@ -906,10 +915,10 @@ const handleSSEMessage = (message) => {
       }
       
       // 检查所有类型的消息中是否包含join token，无论Operation和Status
-      if (message.Output) {
+      if (logEntry.output) {
         // 使用更宽松的正则表达式提取join命令，匹配包含换行符的格式
         // 匹配"kubeadm join"开头，包含"--token"和"--discovery-token-ca-cert-hash"的完整命令
-        const joinTokenMatch = message.Output.match(/kubeadm join[\s\S]*?--token[\s\S]*?--discovery-token-ca-cert-hash[\s\S]*?(?=\n\n|\n$|$)/)
+        const joinTokenMatch = logEntry.output.match(/kubeadm join[\s\S]*?--token[\s\S]*?--discovery-token-ca-cert-hash[\s\S]*?(?=\n\n|\n$|$)/)
         if (joinTokenMatch) {
           const joinCommand = joinTokenMatch[0]
           deployLogs.value += `[${new Date().toLocaleString()}] 已提取join命令: ${joinCommand}\n\n`
@@ -949,9 +958,9 @@ const handleSSEMessage = (message) => {
           // 添加调试信息，帮助排查问题
           deployLogs.value += `[${new Date().toLocaleString()}] 尝试提取join命令，但未匹配到完整格式\n`
           // 记录输出的前500个字符，帮助调试
-          deployLogs.value += `输出片段: ${message.Output.substring(0, 500)}...\n\n`
+          deployLogs.value += `输出片段: ${logEntry.output.substring(0, 500)}...\n\n`
           // 尝试使用更简单的正则表达式提取
-          const simpleJoinTokenMatch = message.Output.match(/kubeadm join.*?--token.*?\n/)
+          const simpleJoinTokenMatch = logEntry.output.match(/kubeadm join.*?--token.*?\n/)
           if (simpleJoinTokenMatch) {
             deployLogs.value += `[${new Date().toLocaleString()}] 尝试使用简单正则表达式提取到join命令: ${simpleJoinTokenMatch[0]}\n\n`
           }
@@ -959,8 +968,8 @@ const handleSSEMessage = (message) => {
       }
       
       // 处理部署完成的情况
-      if ((message.Operation === 'DeployK8sCluster' || message.Operation === 'InitMaster') && 
-          message.Status === 'success') {
+      if ((logEntry.operation === 'DeployK8sCluster' || logEntry.operation === 'InitMaster') && 
+          logEntry.status === 'success') {
         // 部署成功，更新状态
         isDeploying.value = false
         
@@ -968,17 +977,17 @@ const handleSSEMessage = (message) => {
         const hasWorkerNodes = Object.keys(selectedNodes.value).some(nodeId => selectedNodes.value[nodeId] === 'worker')
         
         // 如果部署的是主节点，且没有工作节点，直接进入完成步骤
-        if ((message.Operation === 'InitMaster' || message.Operation === 'DeployK8sCluster') && !hasWorkerNodes) {
+        if ((logEntry.operation === 'InitMaster' || logEntry.operation === 'DeployK8sCluster') && !hasWorkerNodes) {
           currentStep.value = 4
           steps.value[2].status = 'completed'
           steps.value[3].status = 'completed'
-        } else if (message.Operation === 'DeployK8sCluster') {
+        } else if (logEntry.operation === 'DeployK8sCluster') {
           // 如果是完整集群部署，直接进入完成步骤
           currentStep.value = 4
           steps.value[3].status = 'completed'
         }
-      } else if ((message.Operation === 'DeployK8sCluster' || message.Operation === 'InitMaster') && 
-                 message.Status === 'failed') {
+      } else if ((logEntry.operation === 'DeployK8sCluster' || logEntry.operation === 'InitMaster') && 
+                 logEntry.status === 'failed') {
         // 如果部署失败，且还没有提取到join命令，才更新状态为失败
         if (!joinToken.value) {
           // 无论部署结果如何，都先将isDeploying设置为false
@@ -988,9 +997,9 @@ const handleSSEMessage = (message) => {
       }
       
       // 检查日志内容中是否包含部署完成的关键字
-      if (message.Output && (message.Output.includes('=== Kubernetes集群部署完成 ===') || 
-          message.Output.includes('Worker节点加入集群成功') || 
-          message.Output.includes('Kubernetes集群部署完成'))) {
+      if (logEntry.output && (logEntry.output.includes('=== Kubernetes集群部署完成 ===') || 
+          logEntry.output.includes('Worker节点加入集群成功') || 
+          logEntry.output.includes('Kubernetes集群部署完成'))) {
         // 部署完成，更新UI状态
         isDeploying.value = false
         
@@ -1002,7 +1011,7 @@ const handleSSEMessage = (message) => {
       }
     } else {
       // 未知消息格式，记录原始内容
-      deployLogs.value += `[${new Date().toLocaleString()}] 收到未知格式日志: ${JSON.stringify(message)}\n\n`
+      deployLogs.value += `[${new Date().toLocaleString()}] 收到未知格式日志: ${JSON.stringify(logEntry)}\n\n`
     }
   }
 }
