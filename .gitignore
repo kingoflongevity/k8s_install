@@ -1,0 +1,58 @@
+# 忽略二进制文件
+*.exe
+*.out
+*.dll
+*.so
+*.a
+
+# 忽略数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# 忽略IDE配置文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 忽略日志文件
+*.log
+logs/
+
+# 忽略临时文件
+*.tmp
+*.temp
+.DS_Store
+
+# 忽略前端构建文件
+dist/
+build/
+node_modules/
+
+# 忽略后端临时文件
+backend/k8s_installer
+backend/backend-server
+backend/main.go.new
+
+# 忽略环境配置文件
+.env
+.env.local
+.env.*.local
+
+# 忽略测试覆盖率文件
+coverage/
+*.coverprofile
+
+# 忽略Go模块相关文件（如果使用go mod）
+go.work
+
+# 忽略Windows生成的文件
+Thumbs.db
+Desktop.ini
+
+# 忽略脚本执行产生的临时文件
+*.bak
+*.old
+*.backup

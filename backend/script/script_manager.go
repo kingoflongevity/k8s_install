@@ -95,6 +95,11 @@ echo "=== 配置SELinux ==="
 if command -v setenforce &> /dev/null; then
     sudo setenforce 0 2>/dev/null || true
     sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true
+    sudo sed -i 's/^SELINUX=disabled$/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true
+    # 验证SELinux配置
+    sudo grep -E '^SELINUX=' /etc/selinux/config 2>/dev/null || true
+    # 再次确认SELinux状态
+    sudo getenforce 2>/dev/null || true
 fi
 
 # 加载K8s所需内核模块
@@ -664,6 +669,11 @@ echo "=== 配置SELinux ==="
 if command -v setenforce &> /dev/null; then
     sudo setenforce 0 2>/dev/null || true
     sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true
+    sudo sed -i 's/^SELINUX=disabled$/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true
+    # 验证SELinux配置
+    sudo grep -E '^SELINUX=' /etc/selinux/config 2>/dev/null || true
+    # 再次确认SELinux状态
+    sudo getenforce 2>/dev/null || true
 fi
 
 # 加载K8s所需内核模块

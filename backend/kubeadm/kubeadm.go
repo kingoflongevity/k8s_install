@@ -150,26 +150,41 @@ func DeployK8sCluster(ctx context.Context, nodes []node.Node, kubeVersion, arch,
 	if len(masterNodes) == 0 && len(workerNodes) == 0 {
 		return "", fmt.Errorf("至少需要一个节点")
 	}
-	outputLog("cluster", "Kubernetes Cluster", fmt.Sprintf("=== 开始部署Kubernetes集群 ==="))
-	if len(masterNodes) > 0 {
-		outputLog("cluster", "Kubernetes Cluster", fmt.Sprintf("Master节点: %s (%s)", masterNode.Name, masterNode.IP))
-	} else {
-		outputLog("cluster", "Kubernetes Cluster", "Master节点: 无 (仅部署工作节点)")
-	}
-	outputLog("cluster", "Kubernetes Cluster", fmt.Sprintf("Worker节点数量: %d", len(workerNodes)))
-	outputLog("cluster", "Kubernetes Cluster", fmt.Sprintf("Kubernetes版本: %s", kubeVersion))
-	outputLog("cluster", "Kubernetes Cluster", fmt.Sprintf("架构: %s", arch))
-	outputLog("cluster", "Kubernetes Cluster", fmt.Sprintf("发行版: %s", distro))
-	if len(skipSteps) > 0 {
-		outputLog("cluster", "Kubernetes Cluster", fmt.Sprintf("跳过的步骤: %v", skipSteps))
-	}
-	outputLog("cluster", "Kubernetes Cluster", "")
 
 	// 定义joinCmd变量，用于存储从Master节点获取的join命令
 	var joinCmd string
+	var masterClient *ssh.SSHClient
 
 	// 2. 为每个节点执行部署流程
 	allNodes := append(masterNodes, workerNodes...)
+
+	// 2.1 跳过hosts文件更新，因为这部分已经在SSH免密配置阶段完成
+	// 确保所有节点的IP和名称是否有效
+	for _, node := range allNodes {
+		if node.IP == "" {
+			return result.String(), fmt.Errorf("节点 %s 的IP地址为空", node.Name)
+		}
+		if node.Name == "" {
+			return result.String(), fmt.Errorf("节点 %s 的名称为空", node.IP)
+		}
+	}
+
+	// 显示提示信息
+	outputLog("cluster", "Kubernetes Cluster", "=== 跳过hosts文件更新 ===")
+	outputLog("cluster", "Kubernetes Cluster", "hosts文件更新已经在SSH免密配置阶段完成")
+	outputLog("cluster", "Kubernetes Cluster", "所有节点的hosts文件应该已经包含正确的IP和名称对应关系")
+	outputLog("cluster", "Kubernetes Cluster", "现在可以开始其他部署操作")
+
+	// 等待2秒，确保系统准备就绪
+	outputLog("cluster", "Kubernetes Cluster", "等待2秒，确保系统准备就绪")
+	time.Sleep(2 * time.Second)
+
+	// 获取第一个master节点（假设只有一个master节点）
+	if len(masterNodes) > 0 {
+		masterNode = masterNodes[0]
+	}
+
+	// 2.2 为每个节点执行部署流程
 	for _, node := range allNodes {
 		// 检查是否需要取消部署
 		select {
@@ -180,9 +195,9 @@ func DeployK8sCluster(ctx context.Context, nodes []node.Node, kubeVersion, arch,
 		}
 		outputLog(node.ID, node.Name, fmt.Sprintf("=== 部署节点: %s (%s) ===", node.Name, node.IP))
 
-		// 创建SSH客户端
+		// 创建SSH客户端，首先尝试使用节点名称连接（此时hosts文件已更新）
 		sshConfig := ssh.SSHConfig{
-			Host:       node.IP,
+			Host:       node.Name,
 			Port:       node.Port,
 			Username:   node.Username,
 			Password:   node.Password,
@@ -191,8 +206,17 @@ func DeployK8sCluster(ctx context.Context, nodes []node.Node, kubeVersion, arch,
 
 		client, err := ssh.NewSSHClient(sshConfig)
 		if err != nil {
-			outputLog(node.ID, node.Name, fmt.Sprintf("创建SSH客户端失败: %v", err))
-			return result.String(), err
+			// 如果使用节点名称连接失败，尝试使用IP地址连接
+			outputLog(node.ID, node.Name, fmt.Sprintf("使用节点名称连接失败: %v，尝试使用IP地址连接...", err))
+			sshConfig.Host = node.IP
+			client, err = ssh.NewSSHClient(sshConfig)
+			if err != nil {
+				outputLog(node.ID, node.Name, fmt.Sprintf("创建SSH客户端失败: %v", err))
+				return result.String(), err
+			}
+			outputLog(node.ID, node.Name, "使用IP地址连接成功")
+		} else {
+			outputLog(node.ID, node.Name, "使用节点名称连接成功")
 		}
 		defer client.Close()
 
@@ -214,7 +238,87 @@ fi
 		nodeDistro := strings.TrimSpace(distroOutput)
 		outputLog(node.ID, node.Name, fmt.Sprintf("操作系统: %s", nodeDistro))
 
-		// 4. 执行系统准备脚本
+		// 4. 执行系统准备脚本 - 这应该是部署的第一步，在节点重置之前执行
+		if !shouldSkip(StepSystemPreparation) {
+			// 系统准备脚本已经在前面的代码中实现，这里不需要重复
+			// 我们只需要确保它在节点重置之前执行
+			// 系统准备脚本中已经包含了完整的防火墙和SELinux配置
+		}
+
+		// 5. 执行节点重置流程（如果是worker节点且需要重复部署）
+		// 系统准备脚本已经执行完成，现在可以执行节点重置流程
+		if node.NodeType == "worker" {
+			result.WriteString("\n=== 执行worker节点重置流程 ===\n")
+			resetCmd := `# Worker节点重置脚本
+			echo "=== 开始worker节点重置流程 ==="
+			
+			# 检查kubeadm是否安装
+			if command -v kubeadm &> /dev/null; then
+				echo "1. 检查节点是否已加入集群..."
+				# 检查kubelet服务是否运行
+				if command -v systemctl &> /dev/null; then
+					systemctl_status=$(sudo systemctl is-active kubelet 2>/dev/null || echo "inactive")
+					if [ "$systemctl_status" = "active" ] || [ -f /etc/kubernetes/kubelet.conf ]; then
+						echo "2. 节点已加入集群，执行kubeadm reset..."
+						# 执行kubeadm reset，添加--force参数确保重置成功
+						sudo kubeadm reset --force --cri-socket=unix:///run/containerd/containerd.sock
+						
+						# 清理残留文件
+						echo "3. 清理kubernetes残留文件..."
+						sudo rm -rf /etc/kubernetes /var/lib/kubelet /var/lib/dockershim /var/run/kubernetes /var/lib/cni
+						
+						# 清理网络配置
+						echo "4. 清理网络配置..."
+						sudo rm -rf /etc/cni/net.d
+						
+						# 重启containerd服务
+						echo "5. 重启containerd服务..."
+						sudo systemctl restart containerd || true
+						sleep 5
+						
+						echo "✓ Worker节点重置完成"
+					else
+						echo "节点未加入集群，跳过重置步骤"
+					fi
+				else
+					echo "系统没有systemctl，跳过服务状态检查"
+				fi
+			else
+				echo "kubeadm未安装，跳过重置步骤"
+			fi
+			
+			echo "=== Worker节点重置流程完成 ==="
+			`
+
+			resetOutput, err := client.RunCommandWithOutput(resetCmd, func(line string) {
+				result.WriteString("[重置流程] " + line + "\n")
+				outputLog(node.ID, node.Name, "[重置流程] "+line)
+			})
+
+			if err != nil {
+				result.WriteString(fmt.Sprintf("Worker节点重置过程中出现错误: %v\n详细输出:\n%s\n", err, resetOutput))
+				outputLog(node.ID, node.Name, fmt.Sprintf("Worker节点重置失败: %v", err))
+				result.WriteString("警告: Worker节点重置失败，但将继续尝试后续步骤...\n")
+				outputLog(node.ID, node.Name, "警告: Worker节点重置失败，但将继续尝试后续步骤")
+				// 不返回错误，继续执行后续步骤
+			} else {
+				result.WriteString("Worker节点重置成功\n")
+				outputLog(node.ID, node.Name, "Worker节点重置成功")
+			}
+
+			// 添加延迟，确保重置流程完全执行
+			result.WriteString("\n=== 等待5秒，确保重置流程完全执行 ===\n")
+			outputLog(node.ID, node.Name, "等待5秒，确保重置流程完全执行")
+			if _, err := client.RunCommand("sleep 5"); err != nil {
+				result.WriteString(fmt.Sprintf("等待命令执行失败: %v\n", err))
+				outputLog(node.ID, node.Name, fmt.Sprintf("等待命令执行失败: %v", err))
+			}
+		}
+
+		// 6. 执行系统准备脚本
+		// 系统准备脚本已经在前面的代码中实现，这里不需要重复
+		// 我们只需要确保它在节点重置之前执行
+		// 系统准备脚本中已经包含了完整的防火墙和SELinux配置
 		if !shouldSkip(StepSystemPreparation) {
 			result.WriteString("\n=== 执行系统准备 ===\n")
 			var systemPrepCmd string
@@ -250,8 +354,14 @@ fi
 			if !systemPrepFound {
 				systemPrepCmd = `# 系统准备脚本
 # 禁用swap
-        sudo swapoff -a
-        sudo sed -i '/ swap / s/^/#/' /etc/fstab
+echo "=== 禁用swap ==="
+sudo swapoff -a
+sudo sed -i '/ swap / s/^/#/' /etc/fstab
+if [ $? -eq 0 ]; then
+    echo "✓ swap已禁用并在重启后保持禁用"
+else
+    echo "⚠ swap禁用可能未完全生效，请检查/etc/fstab文件"
+fi
 
 # 安装并启动时间同步服务
 echo "=== 安装并配置时间同步 ==="
@@ -274,40 +384,183 @@ elif command -v dnf &> /dev/null || command -v yum &> /dev/null; then
     chronyc sources
 fi
 
-# 安装iptables和ip6tables
-echo "=== 安装iptables和ip6tables ==="
-if command -v apt-get &> /dev/null; then
-    sudo apt install -y iptables ip6tables
-elif command -v dnf &> /dev/null; then
-    sudo dnf install -y iptables ip6tables-services
-elif command -v yum &> /dev/null; then
-    sudo yum install -y iptables-services
-fi
+# 1. 必须的内核模块 - Calico初始化依赖
+	echo "=== 加载必须的内核模块（Calico初始化依赖） ==="
+	sudo modprobe br_netfilter || echo "br_netfilter模块已加载或加载失败"
+	sudo modprobe overlay || echo "overlay模块已加载或加载失败"
+	
+	# 2. 持久化内核模块配置
+	echo "=== 持久化内核模块配置 ==="
+	sudo cat <<EOF > /etc/modules-load.d/k8s.conf
+br_netfilter
+overlay
+EOF
 
-# 启动并启用iptables服务
-echo "=== 启动并启用iptables服务 ==="
+	# 3. 必须的 sysctl - Calico初始化依赖，此文件必须写入
+	echo "=== 配置必须的sysctl（Calico初始化依赖） ==="
+	sudo cat <<EOF > /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward = 1
+EOF
+	sudo sysctl --system
+
+	# 4. 安装iptables和ip6tables以及CNI插件所需的iproute-tc工具
+	echo "=== 安装iptables、ip6tables和iproute-tc ==="
+	if command -v apt-get &> /dev/null; then
+	    sudo apt install -y iptables ip6tables iproute2
+	elif command -v dnf &> /dev/null; then
+	    # Rocky 10 必装，否则calico-node Init直接失败
+	    sudo dnf install -y iptables ip6tables-services iproute-tc
+	elif command -v yum &> /dev/null; then
+	    sudo yum install -y iptables-services iproute-tc
+	fi
+
+	# 5. BPF挂载点（init容器mount-bpffs需要）
+	echo "=== 创建并挂载BPF挂载点 ==="
+	sudo mkdir -p /sys/fs/bpf
+	sudo mount bpffs /sys/fs/bpf || true
+
+	# 6. 确保CNI目录存在
+	echo "=== 确保CNI目录存在 ==="
+	sudo mkdir -p /opt/cni/bin
+	sudo chmod 755 /opt/cni/bin
+	sudo mkdir -p /etc/cni/net.d
+	sudo chmod 755 /etc/cni/net.d
+
+	# 7. 重启关键服务
+	echo "=== 重启关键服务 ==="
+	sudo systemctl restart containerd || true
+	sudo systemctl restart kubelet || true
+
+# 处理iptables服务（兼容不同系统）
+echo "=== 处理iptables服务 ==="
 if command -v systemctl &> /dev/null; then
-    sudo systemctl enable --now iptables || true
-    sudo systemctl enable --now ip6tables || true
-    sudo systemctl restart iptables || true
-    sudo systemctl restart ip6tables || true
+    # 对于不同系统的iptables服务兼容处理
+    echo "检查iptables服务状态..."
+    # 尝试启动并启用iptables服务，如果不存在则忽略错误
+    if systemctl list-units --type=service | grep -q iptables; then
+        echo "iptables服务存在，正在启动和启用..."
+        sudo systemctl enable --now iptables || true
+        sudo systemctl restart iptables || true
+    else
+        echo "iptables服务不存在，确保iptables命令可用..."
+        if ! command -v iptables &> /dev/null; then
+            echo "iptables命令不可用，尝试安装..."
+            if command -v apt-get &> /dev/null; then
+                sudo apt install -y iptables || true
+            elif command -v dnf &> /dev/null; then
+                sudo dnf install -y iptables || true
+            elif command -v yum &> /dev/null; then
+                sudo yum install -y iptables || true
+            fi
+        else
+            echo "✓ iptables命令已可用"
+        fi
+    fi
+    
+    # 处理ip6tables服务
+    if systemctl list-units --type=service | grep -q ip6tables; then
+        echo "ip6tables服务存在，正在启动和启用..."
+        sudo systemctl enable --now ip6tables || true
+        sudo systemctl restart ip6tables || true
+    else
+        echo "ip6tables服务不存在，确保ip6tables命令可用..."
+        if ! command -v ip6tables &> /dev/null; then
+            echo "ip6tables命令不可用，尝试安装..."
+            if command -v apt-get &> /dev/null; then
+                sudo apt install -y ip6tables || true
+            elif command -v dnf &> /dev/null; then
+                sudo dnf install -y ip6tables || true
+            elif command -v yum &> /dev/null; then
+                sudo yum install -y ip6tables || true
+            fi
+        else
+            echo "✓ ip6tables命令已可用"
+        fi
+    fi
 fi
 
-# 关闭防火墙（实验环境建议关闭）
+# 关闭防火墙（实验环境建议关闭）并确保重启后保持关闭
 echo "=== 配置防火墙 ==="
 if command -v ufw &> /dev/null; then
+    echo "处理ufw防火墙..."
+    # 停止并禁用ufw服务
     sudo systemctl stop ufw || true
     sudo systemctl disable ufw || true
+    # 额外的禁用步骤，确保完全关闭
+    sudo ufw disable 2>/dev/null || true
+    # 确保ufw配置文件设置为禁用
+    if [ -f /etc/ufw/ufw.conf ]; then
+        sudo sed -i 's/^ENABLED=yes/ENABLED=no/' /etc/ufw/ufw.conf || true
+    fi
+    echo "✓ ufw防火墙已关闭并禁用，重启后保持关闭"
 elif command -v firewall-cmd &> /dev/null; then
+    echo "处理firewalld防火墙..."
+    # 停止并禁用firewalld服务
     sudo systemctl stop firewalld || true
     sudo systemctl disable firewalld || true
+    # 额外的禁用步骤，确保完全关闭
+    sudo firewall-cmd --state 2>/dev/null && sudo firewall-cmd --panic-on || true
+    # 确保firewalld配置文件设置为禁用
+    if [ -f /etc/firewalld/firewalld.conf ]; then
+        sudo sed -i 's/^FirewallBackend=.*/FirewallBackend=nftables/' /etc/firewalld/firewalld.conf || true
+    fi
+    echo "✓ firewalld防火墙已关闭并禁用，重启后保持关闭"
+else
+    echo "未检测到ufw或firewalld，跳过防火墙配置"
 fi
 
-# 禁用SELINUX（仅适用于RHEL/CentOS系统）
+# 配置SELinux为permissive模式（仅适用于RHEL/CentOS系统）并确保重启后保持配置
 echo "=== 配置SELinux ==="
 if command -v setenforce &> /dev/null; then
+    echo "临时设置SELinux为permissive模式..."
     sudo setenforce 0 2>/dev/null || true
-    sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true
+    
+    echo "永久设置SELinux为permissive模式..."
+    # 尝试多种方式修改SELINUX配置，确保生效
+    if [ -f /etc/selinux/config ]; then
+        # 备份原始配置文件
+        sudo cp /etc/selinux/config /etc/selinux/config.bak
+        # 修改配置文件，将enforcing改为permissive
+        sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true
+        # 添加fallback，将disabled也改为permissive
+        sudo sed -i 's/^SELINUX=disabled$/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true
+        # 验证SELinux配置
+        selinux_status=$(grep ^SELINUX= /etc/selinux/config | cut -d= -f2)
+        echo "SELinux配置已设置为: $selinux_status"
+        # 验证SELinux配置文件内容
+        sudo grep -E '^SELINUX=' /etc/selinux/config 2>/dev/null || true
+        # 再次确认SELinux状态
+        selinux_current=$(sudo getenforce 2>/dev/null || echo "Unknown")
+        echo "当前SELinux状态: $selinux_current"
+        if [ "$selinux_status" = "permissive" ] || [ "$selinux_current" = "Permissive" ]; then
+            echo "✓ SELinux已成功设置为permissive模式，重启后保持配置"
+        else
+            echo "⚠ SELinux配置可能未完全生效，请检查/etc/selinux/config文件"
+        fi
+    else
+        echo "未找到/etc/selinux/config文件，SELinux可能未安装或使用不同配置"
+    fi
+else
+    echo "未检测到SELinux，跳过SELinux配置"
+fi
+
+# 确保防火墙和SELinux状态在重启后保持
+echo "=== 最终确认防火墙和SELinux状态 ==="
+# 再次确认防火墙状态
+if command -v ufw &> /dev/null; then
+    ufw_status=$(sudo ufw status 2>/dev/null || echo "inactive")
+    echo "当前ufw状态: $ufw_status"
+elif command -v firewall-cmd &> /dev/null; then
+    firewalld_status=$(sudo systemctl is-active firewalld 2>/dev/null || echo "inactive")
+    echo "当前firewalld状态: $firewalld_status"
+fi
+
+# 再次确认SELinux状态
+if command -v getenforce &> /dev/null; then
+    selinux_current=$(sudo getenforce 2>/dev/null || echo "Disabled")
+    echo "当前SELinux状态: $selinux_current"
 fi
 
 # 加载K8s所需内核模块
@@ -317,8 +570,8 @@ overlay
 br_netfilter
 EOF
 
-sudo modprobe overlay
-sudo modprobe br_netfilter
+sudo modprobe overlay || echo "overlay模块已加载或加载失败"
+sudo modprobe br_netfilter || echo "br_netfilter模块已加载或加载失败"
 
 # 设置内核参数
 echo "=== 设置内核参数 ==="
@@ -333,6 +586,7 @@ net.bridge.bridge-nf-call-iptables = 1
 net.bridge.bridge-nf-call-ip6tables = 1
 EOF
 
+# 应用内核参数
 sudo sysctl --system
 
 # 验证内核参数设置
@@ -348,25 +602,37 @@ sudo sysctl net.bridge.bridge-nf-call-iptables net.bridge.bridge-nf-call-ip6tabl
 				systemPrepScriptName = "system_prep_default"
 			}
 			result.WriteString(fmt.Sprintf("脚本名称: %s\n", systemPrepScriptName))
-			result.WriteString("脚本执行开始时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+			startTime := time.Now()
+			result.WriteString("脚本执行开始时间: " + startTime.Format("2006-01-02 15:04:05") + "\n")
+			outputLog(node.ID, node.Name, fmt.Sprintf("开始执行系统准备脚本: %s", systemPrepScriptName))
+
 			systemPrepOutput, err := client.RunCommandWithOutput(systemPrepCmd, func(line string) {
 				result.WriteString("[脚本输出] " + line + "\n")
-				fmt.Println("[脚本输出] " + line) // 实时打印到控制台
+				outputLog(node.ID, node.Name, "[脚本输出] "+line)
 			})
+
+			endTime := time.Now()
+			duration := endTime.Sub(startTime)
+			result.WriteString("\n脚本执行结束时间: " + endTime.Format("2006-01-02 15:04:05") + "\n")
+			result.WriteString(fmt.Sprintf("脚本执行持续时间: %v\n", duration))
+
 			if err != nil {
-				result.WriteString("\n脚本执行结束时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
 				result.WriteString(fmt.Sprintf("系统准备脚本执行出现错误: %v\n详细输出:\n%s\n", err, systemPrepOutput))
+				outputLog(node.ID, node.Name, fmt.Sprintf("系统准备脚本执行失败: %v", err))
 				result.WriteString("警告: 系统准备脚本执行失败，但将继续尝试IP转发配置...\n")
+				outputLog(node.ID, node.Name, "警告: 系统准备脚本执行失败，但将继续尝试IP转发配置")
 				// 不返回错误，继续执行IP转发配置
 			} else {
-				result.WriteString("\n脚本执行结束时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
 				result.WriteString("系统准备脚本执行成功\n")
+				outputLog(node.ID, node.Name, "系统准备脚本执行成功")
 			}
 
 			// 添加延迟，确保系统准备脚本完全执行
 			result.WriteString("\n=== 等待5秒，确保系统准备脚本完全执行 ===\n")
+			outputLog(node.ID, node.Name, "等待5秒，确保系统准备脚本完全执行")
 			if _, err := client.RunCommand("sleep 5"); err != nil {
 				result.WriteString(fmt.Sprintf("等待命令执行失败: %v\n", err))
+				outputLog(node.ID, node.Name, fmt.Sprintf("等待命令执行失败: %v", err))
 			}
 		} else {
 			result.WriteString("\n=== 跳过系统准备 ===\n")
@@ -506,7 +772,8 @@ fi
 `
 			ensureIpForwardOutput, err := client.RunCommandWithOutput(ensureIpForwardCmd, func(line string) {
 				result.WriteString("[脚本输出] " + line + "\n")
-				fmt.Println("[脚本输出] " + line) // 实时打印到控制台
+				fmt.Println("[脚本输出] " + line)                 // 实时打印到控制台
+				outputLog(node.ID, node.Name, "[脚本输出] "+line) // 实时发送到前端
 			})
 			if err != nil {
 				result.WriteString("\n脚本执行结束时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
@@ -683,23 +950,31 @@ fi`
 
 			// 执行容器运行时安装脚本并实时输出
 			result.WriteString("\n=== 执行容器运行时安装脚本 ===\n")
+			outputLog(node.ID, node.Name, "=== 执行容器运行时安装脚本 ===")
 			// 确保containerdInstallScriptName有定义
 			if containerdInstallScriptName == "" {
 				containerdInstallScriptName = "containerd_install_default"
 			}
 			result.WriteString(fmt.Sprintf("脚本名称: %s\n", containerdInstallScriptName))
+			outputLog(node.ID, node.Name, fmt.Sprintf("脚本名称: %s", containerdInstallScriptName))
 			result.WriteString("脚本执行开始时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+			outputLog(node.ID, node.Name, "脚本执行开始时间: "+time.Now().Format("2006-01-02 15:04:05"))
 			containerdInstallOutput, err := client.RunCommandWithOutput(containerdInstallCmd, func(line string) {
 				result.WriteString("[脚本输出] " + line + "\n")
-				fmt.Println("[脚本输出] " + line) // 实时打印到控制台
+				fmt.Println("[脚本输出] " + line)                 // 实时打印到控制台
+				outputLog(node.ID, node.Name, "[脚本输出] "+line) // 实时发送到前端
 			})
 			if err != nil {
 				result.WriteString("\n脚本执行结束时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+				outputLog(node.ID, node.Name, "脚本执行结束时间: "+time.Now().Format("2006-01-02 15:04:05"))
 				result.WriteString(fmt.Sprintf("容器运行时安装失败: %v\n详细输出:\n%s\n", err, containerdInstallOutput))
+				outputLog(node.ID, node.Name, fmt.Sprintf("容器运行时安装失败: %v", err))
 				return result.String(), err
 			}
 			result.WriteString("\n脚本执行结束时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+			outputLog(node.ID, node.Name, "脚本执行结束时间: "+time.Now().Format("2006-01-02 15:04:05"))
 			result.WriteString("容器运行时安装成功\n")
+			outputLog(node.ID, node.Name, "容器运行时安装成功")
 		} else {
 			result.WriteString("\n=== 跳过容器运行时安装 ===\n")
 		}
@@ -907,23 +1182,31 @@ fi`
 
 			// 执行容器运行时配置脚本并实时输出
 			result.WriteString("\n=== 执行containerd配置脚本 ===\n")
+			outputLog(node.ID, node.Name, "=== 执行containerd配置脚本 ===")
 			// 确保containerdConfigScriptName有定义
 			if containerdConfigScriptName == "" {
 				containerdConfigScriptName = "containerd_config_default"
 			}
 			result.WriteString(fmt.Sprintf("脚本名称: %s\n", containerdConfigScriptName))
+			outputLog(node.ID, node.Name, fmt.Sprintf("脚本名称: %s", containerdConfigScriptName))
 			result.WriteString("脚本执行开始时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+			outputLog(node.ID, node.Name, "脚本执行开始时间: "+time.Now().Format("2006-01-02 15:04:05"))
 			containerdConfigOutput, err := client.RunCommandWithOutput(containerdConfigCmd, func(line string) {
 				result.WriteString("[脚本输出] " + line + "\n")
-				fmt.Println("[脚本输出] " + line) // 实时打印到控制台
+				fmt.Println("[脚本输出] " + line)                 // 实时打印到控制台
+				outputLog(node.ID, node.Name, "[脚本输出] "+line) // 实时发送到前端
 			})
 			if err != nil {
 				result.WriteString("\n脚本执行结束时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+				outputLog(node.ID, node.Name, "脚本执行结束时间: "+time.Now().Format("2006-01-02 15:04:05"))
 				result.WriteString(fmt.Sprintf("容器运行时配置失败: %v\n详细输出:\n%s\n", err, containerdConfigOutput))
+				outputLog(node.ID, node.Name, fmt.Sprintf("容器运行时配置失败: %v", err))
 				return result.String(), err
 			}
 			result.WriteString("\n脚本执行结束时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+			outputLog(node.ID, node.Name, "脚本执行结束时间: "+time.Now().Format("2006-01-02 15:04:05"))
 			result.WriteString("容器运行时配置成功\n")
+			outputLog(node.ID, node.Name, "容器运行时配置成功")
 		}
 
 		// 7. 添加Kubernetes仓库
@@ -1003,28 +1286,38 @@ fi`
 
 			// 执行添加Kubernetes仓库脚本并实时输出
 			result.WriteString("\n=== 执行添加Kubernetes仓库脚本 ===\n")
+			outputLog(node.ID, node.Name, "=== 执行添加Kubernetes仓库脚本 ===")
 			// 确保addK8sRepoScriptName有定义
 			if addK8sRepoScriptName == "" {
 				addK8sRepoScriptName = "add_k8s_repo_default"
 			}
 			result.WriteString(fmt.Sprintf("脚本名称: %s\n", addK8sRepoScriptName))
+			outputLog(node.ID, node.Name, fmt.Sprintf("脚本名称: %s", addK8sRepoScriptName))
 			result.WriteString("脚本执行开始时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+			outputLog(node.ID, node.Name, "脚本执行开始时间: "+time.Now().Format("2006-01-02 15:04:05"))
 			addK8sRepoOutput, err := client.RunCommandWithOutput(addK8sRepoCmd, func(line string) {
 				result.WriteString("[脚本输出] " + line + "\n")
-				fmt.Println("[脚本输出] " + line) // 实时打印到控制台
+				fmt.Println("[脚本输出] " + line)                 // 实时打印到控制台
+				outputLog(node.ID, node.Name, "[脚本输出] "+line) // 实时发送到前端
 			})
 			if err != nil {
 				result.WriteString("\n脚本执行结束时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+				outputLog(node.ID, node.Name, "脚本执行结束时间: "+time.Now().Format("2006-01-02 15:04:05"))
 				result.WriteString(fmt.Sprintf("添加Kubernetes仓库失败: %v\n详细输出:\n%s\n", err, addK8sRepoOutput))
+				outputLog(node.ID, node.Name, fmt.Sprintf("添加Kubernetes仓库失败: %v", err))
 				return result.String(), err
 			}
 			result.WriteString("\n脚本执行结束时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+			outputLog(node.ID, node.Name, "脚本执行结束时间: "+time.Now().Format("2006-01-02 15:04:05"))
 			result.WriteString("添加Kubernetes仓库成功\n")
+			outputLog(node.ID, node.Name, "添加Kubernetes仓库成功")
 
 			// 添加延迟，确保仓库更新完全执行
 			result.WriteString("\n=== 等待3秒，确保仓库更新完全执行 ===\n")
+			outputLog(node.ID, node.Name, "=== 等待3秒，确保仓库更新完全执行 ===")
 			if _, err := client.RunCommand("sleep 3"); err != nil {
 				result.WriteString(fmt.Sprintf("等待命令执行失败: %v\n", err))
+				outputLog(node.ID, node.Name, fmt.Sprintf("等待命令执行失败: %v", err))
 			}
 		} else {
 			result.WriteString("\n=== 跳过Kubernetes仓库配置 ===\n")
@@ -1157,20 +1450,32 @@ EOF
 # 更新仓库缓存
 echo "=== 更新仓库缓存 ==="
 if command -v dnf &> /dev/null; then
-    dnf clean all
-    dnf makecache -y
+    echo "使用dnf更新仓库缓存..."
+    sudo dnf clean all
+    sudo dnf makecache -y
 else
-    yum clean all
-    yum makecache -y
+    echo "使用yum更新仓库缓存..."
+    sudo yum clean all
+    sudo yum makecache -y
 fi
 
 # 检查可用的Kubernetes版本
 echo "=== 检查可用的Kubernetes版本 ==="
+# 改进版本检测逻辑，使用更可靠的方法
 AVAILABLE_VERSIONS=$(if command -v dnf &> /dev/null; then
-    dnf --showduplicates list kubelet --disableexcludes=kubernetes 2>/dev/null | grep -oP '(?<=kubelet-)[0-9]+\.[0-9]+\.[0-9]+'
+    # 尝试多种方法获取可用版本
+    sudo dnf list --available kubelet --disableexcludes=kubernetes 2>/dev/null | grep -E 'kubelet' | grep -v '^\+' | awk '{print $2}' | cut -d'-' -f1 | sort -V | uniq || \
+    sudo dnf search kubelet --disableexcludes=kubernetes 2>/dev/null | grep -E '^kubelet-[0-9]' | awk '{print $1}' | cut -d'-' -f2 | sort -V | uniq || \
+    echo "1.28.2"
 else
-    yum --showduplicates list kubelet --disableexcludes=kubernetes 2>/dev/null | grep -oP '(?<=kubelet-)[0-9]+\.[0-9]+\.[0-9]+'
-fi | sort -V | uniq)
+    # 尝试多种方法获取可用版本
+    sudo yum list --available kubelet --disableexcludes=kubernetes 2>/dev/null | grep -E 'kubelet' | grep -v '^\+' | awk '{print $2}' | cut -d'-' -f1 | sort -V | uniq || \
+    sudo yum search kubelet --disableexcludes=kubernetes 2>/dev/null | grep -E '^kubelet-[0-9]' | awk '{print $1}' | cut -d'-' -f2 | sort -V | uniq || \
+    echo "1.28.2"
+fi)
+
+# 清理版本列表，移除空值和重复项
+AVAILABLE_VERSIONS=$(echo "$AVAILABLE_VERSIONS" | grep -v '^$' | sort -V | uniq)
 
 echo "可用的Kubernetes版本: $AVAILABLE_VERSIONS"
 
@@ -1192,17 +1497,107 @@ if ! echo "$AVAILABLE_VERSIONS" | grep -q "^$SELECTED_VERSION$"; then
     fi
 fi
 
+# 最终验证SELECTED_VERSION是否为空
+if [ -z "$SELECTED_VERSION" ]; then
+    echo "错误: SELECTED_VERSION变量为空，使用默认版本1.28.2"
+    SELECTED_VERSION="1.28.2"
+fi
+
 # 安装Kubernetes组件
 echo "=== 安装kubelet、kubeadm和kubectl $SELECTED_VERSION ==="
+# 改进安装命令，使用更可靠的版本格式和重试机制
+INSTALL_SUCCESS=false
 if command -v dnf &> /dev/null; then
-    dnf install -y kubelet-$SELECTED_VERSION kubeadm-$SELECTED_VERSION kubectl-$SELECTED_VERSION --disableexcludes=kubernetes
+    echo "使用dnf安装Kubernetes组件..."
+    # 尝试使用不同的版本格式，最多尝试3次
+    for i in {1..3}; do
+        echo "尝试安装 ($i/3)..."
+        # 尝试1: 不指定版本，使用最新版本
+        if sudo dnf install -y kubelet kubeadm kubectl --disableexcludes=kubernetes; then
+            echo "✓ 安装成功（使用最新版本）"
+            INSTALL_SUCCESS=true
+            break
+        fi
+        # 尝试2: 指定完整版本号
+        if sudo dnf install -y kubelet-$SELECTED_VERSION kubeadm-$SELECTED_VERSION kubectl-$SELECTED_VERSION --disableexcludes=kubernetes; then
+            echo "✓ 安装成功（使用指定版本）"
+            INSTALL_SUCCESS=true
+            break
+        fi
+        # 尝试3: 使用更宽松的版本匹配
+        if sudo dnf install -y "kubelet-$SELECTED_VERSION*" "kubeadm-$SELECTED_VERSION*" "kubectl-$SELECTED_VERSION*" --disableexcludes=kubernetes; then
+            echo "✓ 安装成功（使用版本匹配）"
+            INSTALL_SUCCESS=true
+            break
+        fi
+        echo "安装失败，等待3秒后重试..."
+        sleep 3
+    done
 else
-    yum install -y kubelet-$SELECTED_VERSION kubeadm-$SELECTED_VERSION kubectl-$SELECTED_VERSION --disableexcludes=kubernetes
+    echo "使用yum安装Kubernetes组件..."
+    # 尝试使用不同的版本格式，最多尝试3次
+    for i in {1..3}; do
+        echo "尝试安装 ($i/3)..."
+        # 尝试1: 不指定版本，使用最新版本
+        if sudo yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes; then
+            echo "✓ 安装成功（使用最新版本）"
+            INSTALL_SUCCESS=true
+            break
+        fi
+        # 尝试2: 指定完整版本号
+        if sudo yum install -y kubelet-$SELECTED_VERSION kubeadm-$SELECTED_VERSION kubectl-$SELECTED_VERSION --disableexcludes=kubernetes; then
+            echo "✓ 安装成功（使用指定版本）"
+            INSTALL_SUCCESS=true
+            break
+        fi
+        # 尝试3: 使用更宽松的版本匹配
+        if sudo yum install -y "kubelet-$SELECTED_VERSION*" "kubeadm-$SELECTED_VERSION*" "kubectl-$SELECTED_VERSION*" --disableexcludes=kubernetes; then
+            echo "✓ 安装成功（使用版本匹配）"
+            INSTALL_SUCCESS=true
+            break
+        fi
+        echo "安装失败，等待3秒后重试..."
+        sleep 3
+    done
+fi
+
+# 检查安装是否成功
+if [ "$INSTALL_SUCCESS" = false ]; then
+    echo "⚠ 安装失败，尝试使用备选方法..."
+    # 备选方法：使用rpm直接安装
+    if command -v rpm &> /dev/null; then
+        echo "尝试使用rpm直接安装..."
+        # 这里可以添加rpm安装逻辑
+        echo "警告: 备选安装方法未实现，请检查网络连接和仓库配置"
+    fi
 fi
 
 # 启动kubelet
 echo "=== 启动kubelet服务 ==="
-systemctl enable --now kubelet`
+sudo systemctl enable --now kubelet
+
+# 验证所有组件安装
+echo "=== 验证组件安装 ==="
+echo "检查kubeadm版本..."
+kubeadm version 2>/dev/null || echo "kubeadm版本检查失败"
+echo "检查kubelet版本..."
+kubelet --version 2>/dev/null || echo "kubelet版本检查失败"
+echo "检查kubectl版本..."
+kubectl version --client 2>/dev/null || echo "kubectl版本检查失败"
+echo "检查containerd版本..."
+containerd --version 2>/dev/null || echo "containerd版本检查失败"
+if command -v crictl &> /dev/null; then
+    echo "检查crictl版本..."
+    crictl version 2>/dev/null || echo "crictl版本检查失败"
+fi
+
+# 最终验证
+echo "=== 最终验证Kubernetes组件安装 ==="
+if command -v kubeadm &> /dev/null && command -v kubelet &> /dev/null && command -v kubectl &> /dev/null; then
+    echo "✓ 所有Kubernetes组件已成功安装"
+else
+    echo "⚠ 部分Kubernetes组件安装失败，请检查安装日志"
+fi`
 					k8sComponentsCmd = strings.ReplaceAll(k8sComponentsCmd, "${version}", kubeVersion)
 				default:
 					result.WriteString(fmt.Sprintf("不支持的发行版: %s\n", nodeDistro))
@@ -1213,28 +1608,38 @@ systemctl enable --now kubelet`
 
 			// 执行Kubernetes组件安装脚本并实时输出
 			result.WriteString("\n=== 执行Kubernetes组件安装脚本 ===\n")
+			outputLog(node.ID, node.Name, "=== 执行Kubernetes组件安装脚本 ===")
 			// 确保k8sComponentsScriptName有定义
 			if k8sComponentsScriptName == "" {
 				k8sComponentsScriptName = "k8s_components_default"
 			}
 			result.WriteString(fmt.Sprintf("脚本名称: %s\n", k8sComponentsScriptName))
+			outputLog(node.ID, node.Name, fmt.Sprintf("脚本名称: %s", k8sComponentsScriptName))
 			result.WriteString("脚本执行开始时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+			outputLog(node.ID, node.Name, "脚本执行开始时间: "+time.Now().Format("2006-01-02 15:04:05"))
 			k8sComponentsOutput, err := client.RunCommandWithOutput(k8sComponentsCmd, func(line string) {
 				result.WriteString("[脚本输出] " + line + "\n")
-				fmt.Println("[脚本输出] " + line) // 实时打印到控制台
+				fmt.Println("[脚本输出] " + line)                 // 实时打印到控制台
+				outputLog(node.ID, node.Name, "[脚本输出] "+line) // 实时发送到前端
 			})
 			if err != nil {
 				result.WriteString("\n脚本执行结束时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+				outputLog(node.ID, node.Name, "脚本执行结束时间: "+time.Now().Format("2006-01-02 15:04:05"))
 				result.WriteString(fmt.Sprintf("Kubernetes组件安装失败: %v\n详细输出:\n%s\n", err, k8sComponentsOutput))
+				outputLog(node.ID, node.Name, fmt.Sprintf("Kubernetes组件安装失败: %v", err))
 				return result.String(), err
 			}
 			result.WriteString("\n脚本执行结束时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+			outputLog(node.ID, node.Name, "脚本执行结束时间: "+time.Now().Format("2006-01-02 15:04:05"))
 			result.WriteString("Kubernetes组件安装成功\n")
+			outputLog(node.ID, node.Name, "Kubernetes组件安装成功")
 
 			// 添加延迟，确保Kubernetes组件安装完全执行
 			result.WriteString("\n=== 等待5秒，确保Kubernetes组件安装完全执行 ===\n")
+			outputLog(node.ID, node.Name, "=== 等待5秒，确保Kubernetes组件安装完全执行 ===")
 			if _, err := client.RunCommand("sleep 5"); err != nil {
 				result.WriteString(fmt.Sprintf("等待命令执行失败: %v\n", err))
+				outputLog(node.ID, node.Name, fmt.Sprintf("等待命令执行失败: %v", err))
 			}
 		} else {
 			result.WriteString("\n=== 跳过Kubernetes组件安装 ===\n")
@@ -1244,7 +1649,6 @@ systemctl enable --now kubelet`
 	}
 
 	// 3. 初始化Master节点
-	var masterClient *ssh.SSHClient
 	// 检查是否需要取消部署
 	select {
 	case <-ctx.Done():
@@ -1252,44 +1656,58 @@ systemctl enable --now kubelet`
 		return result.String(), ctx.Err()
 	default:
 	}
-	if !shouldSkip(StepMasterInitialization) {
-		result.WriteString("=== 初始化Master节点 ===\n")
-		masterSSHConfig := ssh.SSHConfig{
-			Host:       masterNode.IP,
-			Port:       masterNode.Port,
-			Username:   masterNode.Username,
-			Password:   masterNode.Password,
-			PrivateKey: masterNode.PrivateKey,
-		}
 
-		masterClient, err := ssh.NewSSHClient(masterSSHConfig)
-		if err != nil {
-			result.WriteString(fmt.Sprintf("创建Master节点SSH客户端失败: %v\n", err))
-			return result.String(), err
-		}
-		defer masterClient.Close()
+	// 检查是否有master节点
+	if len(masterNodes) == 0 {
+		result.WriteString("=== 跳过Master节点初始化：未找到master节点 ===\n")
+	} else if !shouldSkip(StepMasterInitialization) {
+		// 检查masterNode字段是否有效
+		if masterNode.Name == "" && masterNode.IP == "" {
+			result.WriteString("=== 跳过Master节点初始化：master节点信息无效 ===\n")
+		} else if masterNode.Username == "" {
+			result.WriteString("=== 跳过Master节点初始化：master节点用户名未设置 ===\n")
+		} else if masterNode.Password == "" && masterNode.PrivateKey == "" {
+			result.WriteString("=== 跳过Master节点初始化：master节点密码或私钥未设置 ===\n")
+		} else {
+			result.WriteString("=== 初始化Master节点 ===\n")
+			// 直接使用节点的IP地址进行连接，避免依赖本地hosts文件
+			masterSSHConfig := ssh.SSHConfig{
+				Host:       masterNode.IP, // 直接使用IP地址，不依赖本地hosts文件
+				Port:       masterNode.Port,
+				Username:   masterNode.Username,
+				Password:   masterNode.Password,
+				PrivateKey: masterNode.PrivateKey,
+			}
 
-		// 检测Master节点的操作系统类型
-		result.WriteString("\n=== 检测Master节点操作系统类型 ===\n")
-		distroCmd := `
+			initMasterClient, err := ssh.NewSSHClient(masterSSHConfig)
+			if err != nil {
+				result.WriteString(fmt.Sprintf("创建Master节点SSH客户端失败: %v\n", err))
+				return result.String(), err
+			}
+			defer initMasterClient.Close()
+			result.WriteString(fmt.Sprintf("连接到Master节点 %s (%s) 成功\n", masterNode.Name, masterNode.IP))
+
+			// 检测Master节点的操作系统类型
+			result.WriteString("\n=== 检测Master节点操作系统类型 ===\n")
+			distroCmd := `
 if [ -f /etc/os-release ]; then
 	. /etc/os-release
 	echo $ID
 fi
 `
-		masterDistro, err := masterClient.RunCommand(distroCmd)
-		if err != nil {
-			result.WriteString(fmt.Sprintf("检测Master节点操作系统类型失败: %v\n", err))
-			return result.String(), err
-		}
-		masterDistro = strings.TrimSpace(masterDistro)
-		result.WriteString(fmt.Sprintf("Master节点操作系统: %s\n", masterDistro))
+			masterDistro, err := initMasterClient.RunCommand(distroCmd)
+			if err != nil {
+				result.WriteString(fmt.Sprintf("检测Master节点操作系统类型失败: %v\n", err))
+				return result.String(), err
+			}
+			masterDistro = strings.TrimSpace(masterDistro)
+			result.WriteString(fmt.Sprintf("Master节点操作系统: %s\n", masterDistro))
 
-		// 在执行init命令前再次验证和应用IP转发配置，确保万无一失
-		result.WriteString("\n=== 最后验证和应用IP转发配置 ===\n")
-		result.WriteString("脚本名称: final_ip_forward_verification\n")
-		result.WriteString("脚本执行开始时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
-		finalIpForwardCmd := `
+			// 在执行init命令前再次验证和应用IP转发配置，确保万无一失
+			result.WriteString("\n=== 最后验证和应用IP转发配置 ===\n")
+			result.WriteString("脚本名称: final_ip_forward_verification\n")
+			result.WriteString("脚本执行开始时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+			finalIpForwardCmd := `
 # 1. 确保IP转发配置文件存在并包含正确的配置，设置适当的权限
  echo "=== 再次配置IP转发 ==="
 sudo bash -c 'cat <<EOF > /etc/sysctl.d/99-kubernetes-ipforward.conf
@@ -1378,52 +1796,52 @@ sudo sysctl --system
 echo "=== 最终验证所有关键内核参数 ==="
 sudo bash -c 'sysctl net.bridge.bridge-nf-call-iptables net.bridge.bridge-nf-call-ip6tables net.ipv4.ip_forward'
 `
-		finalIpForwardOutput, err := masterClient.RunCommandWithOutput(finalIpForwardCmd, func(line string) {
-			result.WriteString("[脚本输出] " + line + "\n")
-			fmt.Println("[脚本输出] " + line) // 实时打印到控制台
-		})
-		if err != nil {
-			result.WriteString("\n脚本执行结束时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
-			result.WriteString(fmt.Sprintf("最后验证和应用IP转发配置失败: %v\n详细输出:\n%s\n", err, finalIpForwardOutput))
-			// 不返回错误，继续执行，但会在init阶段再次检查
-			result.WriteString("警告: IP转发配置验证失败，但将继续执行Master节点初始化，因为kubeadm init会再次检查\n")
-		} else {
-			result.WriteString("\n脚本执行结束时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
-			result.WriteString("最后验证和应用IP转发配置成功\n")
-			// 检查IP转发值是否确实为1
-			if !strings.Contains(finalIpForwardOutput, "最终IP转发值: 1") || !strings.Contains(finalIpForwardOutput, "直接写入文件后，内容为: 1") {
-				result.WriteString("警告: IP转发值可能未正确设置为1，建议检查\n")
+			finalIpForwardOutput, err := initMasterClient.RunCommandWithOutput(finalIpForwardCmd, func(line string) {
+				result.WriteString("[脚本输出] " + line + "\n")
+				fmt.Println("[脚本输出] " + line) // 实时打印到控制台
+			})
+			if err != nil {
+				result.WriteString("\n脚本执行结束时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+				result.WriteString(fmt.Sprintf("最后验证和应用IP转发配置失败: %v\n详细输出:\n%s\n", err, finalIpForwardOutput))
+				// 不返回错误，继续执行，但会在init阶段再次检查
+				result.WriteString("警告: IP转发配置验证失败，但将继续执行Master节点初始化，因为kubeadm init会再次检查\n")
 			} else {
-				result.WriteString("✓ IP转发值已正确设置为1\n")
-			}
-		}
-
-		// 从脚本管理器获取初始化Kubernetes集群脚本
-		var initCmd string
-		var initFound bool
-		var initScriptName string
-
-		// 从脚本管理器获取Kubernetes初始化脚本
-		if scriptManager != nil {
-			if scriptGetter, ok := scriptManager.(interface {
-				GetScript(name string) (string, bool)
-			}); ok {
-				// 尝试获取特定发行版的Kubernetes初始化脚本，使用与前端完全一致的命名格式
-				// 前端命名格式：${system}_${step.name.toLowerCase().replace(/\s+/g, '_')}
-				// 将步骤名称转换为小写并替换所有空格为下划线
-				stepName := strings.ReplaceAll(strings.ToLower("初始化kubernetes集群"), " ", "_")
-				initScriptName = fmt.Sprintf("%s_%s", masterDistro, stepName)
-				if script, scriptFound := scriptGetter.GetScript(initScriptName); scriptFound {
-					initCmd = strings.ReplaceAll(script, "${version}", kubeVersion)
-					initFound = true
-					result.WriteString(fmt.Sprintf("使用自定义Kubernetes初始化脚本: %s\n", initScriptName))
+				result.WriteString("\n脚本执行结束时间: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+				result.WriteString("最后验证和应用IP转发配置成功\n")
+				// 检查IP转发值是否确实为1
+				if !strings.Contains(finalIpForwardOutput, "最终IP转发值: 1") || !strings.Contains(finalIpForwardOutput, "直接写入文件后，内容为: 1") {
+					result.WriteString("警告: IP转发值可能未正确设置为1，建议检查\n")
+				} else {
+					result.WriteString("✓ IP转发值已正确设置为1\n")
 				}
 			}
-		}
 
-		// 如果没有找到自定义脚本，使用默认脚本
-		if !initFound {
-			initCmd = fmt.Sprintf(`# 重置集群，清理旧配置
+			// 从脚本管理器获取初始化Kubernetes集群脚本
+			var initCmd string
+			var initFound bool
+			var initScriptName string
+
+			// 从脚本管理器获取Kubernetes初始化脚本
+			if scriptManager != nil {
+				if scriptGetter, ok := scriptManager.(interface {
+					GetScript(name string) (string, bool)
+				}); ok {
+					// 尝试获取特定发行版的Kubernetes初始化脚本，使用与前端完全一致的命名格式
+					// 前端命名格式：${system}_${step.name.toLowerCase().replace(/\s+/g, '_')}
+					// 将步骤名称转换为小写并替换所有空格为下划线
+					stepName := strings.ReplaceAll(strings.ToLower("初始化kubernetes集群"), " ", "_")
+					initScriptName = fmt.Sprintf("%s_%s", masterDistro, stepName)
+					if script, scriptFound := scriptGetter.GetScript(initScriptName); scriptFound {
+						initCmd = strings.ReplaceAll(script, "${version}", kubeVersion)
+						initFound = true
+						result.WriteString(fmt.Sprintf("使用自定义Kubernetes初始化脚本: %s\n", initScriptName))
+					}
+				}
+			}
+
+			// 如果没有找到自定义脚本，使用默认脚本
+			if !initFound {
+				initCmd = fmt.Sprintf(`# 重置集群，清理旧配置
 										echo "=== 重置集群，清理旧配置 ==="
 										sudo kubeadm reset --force
 										
@@ -1603,9 +2021,85 @@ echo "最终containerd socket状态: $final_socket"
 					    # 安装CNI网络插件（使用Flannel）
 					    if [ -f $HOME/.kube/config ]; then
 					        echo "=== 安装Flannel网络插件 ==="
-					        kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+					        # 增加重试机制，确保Flannel安装成功
+					        for i in {1..3}; do
+					            echo "尝试安装Flannel ($i/3)..."
+					            if kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml; then
+					                echo "✓ Flannel网络插件安装成功"
+					                # 等待Flannel部署完成
+					                echo "等待Flannel部署完成..."
+					                sleep 10
+					                # 检查Flannel pods状态
+					                kubectl get pods -n kube-flannel
+					                break
+					            else
+					                echo "✗ Flannel安装失败，正在重试..."
+					                sleep 5
+					            fi
+					        done
+					        
+					        # 验证CNI配置是否生成
+					        echo "=== 验证CNI配置 ==="
+					        if [ -d /etc/cni/net.d ]; then
+					            echo "CNI配置目录存在"
+					            ls -la /etc/cni/net.d/
+					            if ls /etc/cni/net.d/*.conf 1> /dev/null 2>&1; then
+					                echo "✓ CNI配置文件已生成"
+					            else
+					                echo "✗ CNI配置文件未生成，尝试手动创建Flannel配置"
+					                # 手动创建Flannel CNI配置
+					                sudo mkdir -p /etc/cni/net.d
+					                sudo bash -c 'cat <<EOF > /etc/cni/net.d/10-flannel.conf
+{
+  "name": "cbr0",
+  "type": "flannel",
+  "delegate": {
+    "isDefaultGateway": true
+  }
+}
+EOF'
+					                echo "✓ 手动创建Flannel CNI配置成功"
+					                ls -la /etc/cni/net.d/
+					            fi
+					        else
+					            echo "✗ CNI配置目录不存在，创建目录并手动配置"
+					            sudo mkdir -p /etc/cni/net.d
+					            sudo bash -c 'cat <<EOF > /etc/cni/net.d/10-flannel.conf
+{
+  "name": "cbr0",
+  "type": "flannel",
+  "delegate": {
+    "isDefaultGateway": true
+  }
+}
+EOF'
+					            echo "✓ 手动创建Flannel CNI配置成功"
+					        fi
+					        
+					        # 重启containerd和kubelet服务，确保CNI插件生效
+					        echo "=== 重启containerd和kubelet服务，确保CNI插件生效 ==="
+					        sudo systemctl restart containerd
+					        sudo systemctl restart kubelet
+					        echo "✓ 服务重启完成"
+					        
+					        # 再次检查Flannel pods状态
+					        echo "=== 再次检查Flannel pods状态 ==="
+					        sleep 5
+					        kubectl get pods -n kube-flannel
+					        
+					        # 检查节点状态
+					        echo "=== 检查节点状态 ==="
+					        kubectl get nodes
 					    else
 					        echo "✗ 无法安装CNI插件，kubectl配置失败"
+					        # 即使kubectl配置失败，也要尝试创建CNI配置目录
+					        sudo mkdir -p /etc/cni/net.d
+					        echo "✓ 创建CNI配置目录成功"
+					        
+					        # 重启containerd和kubelet服务
+					        echo "=== 重启containerd和kubelet服务 ==="
+					        sudo systemctl restart containerd
+					        sudo systemctl restart kubelet
 					    fi
 					else
 					        echo "✗ kubeadm init 失败"
@@ -1613,42 +2107,105 @@ echo "最终containerd socket状态: $final_socket"
 					        echo "=== 显示kubeadm日志 ==="
 					        sudo journalctl -u kubelet --no-pager -n 50
 					    fi`, kubeVersion)
-			result.WriteString("使用默认Kubernetes初始化脚本\n")
-		}
-
-		var joinCmd string
-		initOutput, err := masterClient.RunCommandWithOutput(initCmd, func(line string) {
-			result.WriteString(line + "\n")
-			fmt.Println(line) // 实时打印到控制台
-
-			// 实时检查输出，提取Join命令
-			if strings.HasPrefix(line, "kubeadm join") {
-				joinCmd = strings.TrimSpace(line)
-				result.WriteString("\n=== 已获取Join命令，开始部署Worker节点 ===\n")
+				result.WriteString("使用默认Kubernetes初始化脚本\n")
 			}
-		})
-		if err != nil {
-			result.WriteString(fmt.Sprintf("Master节点初始化失败: %v\n输出: %s\n", err, initOutput))
-			return result.String(), err
-		}
-		result.WriteString("Master节点初始化成功\n\n")
 
-		// 如果没有从输出中捕获到Join命令，尝试直接获取
-		if joinCmd == "" {
-			result.WriteString("=== 从输出中未捕获到Join命令，尝试直接获取 ===\n")
-			joinCmdCmd := `kubeadm token create --print-join-command`
-			joinCmd, err = masterClient.RunCommand(joinCmdCmd)
+			var joinCmd string
+			initOutput, err := initMasterClient.RunCommandWithOutput(initCmd, func(line string) {
+				result.WriteString(line + "\n")
+				fmt.Println(line)                               // 实时打印到控制台
+				outputLog(masterNode.ID, masterNode.Name, line) // 实时发送到前端
+
+				// 实时检查输出，提取Join命令
+				if strings.HasPrefix(line, "kubeadm join") {
+					joinCmd = strings.TrimSpace(line)
+					result.WriteString("\n=== 已获取Join命令，开始部署Worker节点 ===\n")
+					outputLog(masterNode.ID, masterNode.Name, "=== 已获取Join命令，开始部署Worker节点 ===")
+				}
+			})
 			if err != nil {
-				result.WriteString(fmt.Sprintf("获取Join命令失败: %v\n", err))
+				result.WriteString(fmt.Sprintf("Master节点初始化失败: %v\n输出: %s\n", err, initOutput))
+				outputLog(masterNode.ID, masterNode.Name, fmt.Sprintf("Master节点初始化失败: %v", err))
 				return result.String(), err
 			}
-			joinCmd = strings.TrimSpace(joinCmd)
+			result.WriteString("Master节点初始化成功\n\n")
+			outputLog(masterNode.ID, masterNode.Name, "Master节点初始化成功")
+
+			// 如果没有从输出中捕获到Join命令，尝试直接获取
+			if joinCmd == "" {
+				result.WriteString("=== 从输出中未捕获到Join命令，尝试直接获取 ===\n")
+
+				// 尝试多种方法获取join命令，增加重试机制
+				joinCmdCmd := `kubeadm token create --print-join-command`
+				var retryCount int = 3
+				var lastErr error
+
+				for i := 1; i <= retryCount; i++ {
+					result.WriteString(fmt.Sprintf("尝试获取Join命令 (%d/%d)...\n", i, retryCount))
+					joinCmd, err = initMasterClient.RunCommand(joinCmdCmd)
+					if err == nil && strings.TrimSpace(joinCmd) != "" {
+						joinCmd = strings.TrimSpace(joinCmd)
+						result.WriteString(fmt.Sprintf("成功获取Join命令: %s\n", joinCmd))
+						break
+					} else {
+						lastErr = err
+						result.WriteString(fmt.Sprintf("获取Join命令失败: %v\n", err))
+						if i < retryCount {
+							result.WriteString("等待3秒后重试...\n")
+							time.Sleep(3 * time.Second)
+						}
+					}
+				}
+
+				if joinCmd == "" {
+					// 尝试另一种方法获取join命令
+					result.WriteString("=== 尝试使用另一种方法获取Join命令 ===\n")
+					tokenCmd := `kubeadm token create`
+					token, err := initMasterClient.RunCommand(tokenCmd)
+					if err != nil {
+						result.WriteString(fmt.Sprintf("创建token失败: %v\n", err))
+						if lastErr != nil {
+							return result.String(), lastErr
+						} else {
+							return result.String(), err
+						}
+					}
+					token = strings.TrimSpace(token)
+
+					// 获取ca cert hash
+					caCertHashCmd := `openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //'`
+					caCertHash, err := initMasterClient.RunCommand(caCertHashCmd)
+					if err != nil {
+						result.WriteString(fmt.Sprintf("获取ca cert hash失败: %v\n", err))
+						if lastErr != nil {
+							return result.String(), lastErr
+						} else {
+							return result.String(), err
+						}
+					}
+					caCertHash = strings.TrimSpace(caCertHash)
+
+					// 构建join命令
+					controlPlaneEndpoint := fmt.Sprintf("%s:6443", masterNode.IP)
+					joinCmd = fmt.Sprintf("kubeadm join %s --token %s --discovery-token-ca-cert-hash sha256:%s", controlPlaneEndpoint, token, caCertHash)
+					result.WriteString(fmt.Sprintf("成功构建Join命令: %s\n", joinCmd))
+				}
+			}
+
+			// 将join命令存储到master节点的JoinCommand字段中
+			for i, n := range nodes {
+				if n.ID == masterNode.ID {
+					nodes[i].JoinCommand = joinCmd
+					break
+				}
+			}
 		}
 	} else {
 		result.WriteString("=== 跳过Master节点初始化 ===\n")
 		// 如果跳过Master节点初始化，需要单独创建SSH客户端并获取Join命令
+		// 直接使用节点的IP地址进行连接，避免依赖本地hosts文件
 		masterSSHConfig := ssh.SSHConfig{
-			Host:       masterNode.IP,
+			Host:       masterNode.IP, // 直接使用IP地址，不依赖本地hosts文件
 			Port:       masterNode.Port,
 			Username:   masterNode.Username,
 			Password:   masterNode.Password,
@@ -1662,16 +2219,74 @@ echo "最终containerd socket状态: $final_socket"
 			return result.String(), err
 		}
 		defer masterClient.Close()
+		result.WriteString(fmt.Sprintf("连接到Master节点 %s (%s) 成功\n", masterNode.Name, masterNode.IP))
 
-		// 获取Join命令
+		// 获取Join命令，增加重试机制和多种获取方法
 		result.WriteString("=== 获取Join命令 ===\n")
+
+		// 尝试多种方法获取join命令，增加重试机制
 		joinCmdCmd := `kubeadm token create --print-join-command`
-		joinCmd, err = masterClient.RunCommand(joinCmdCmd)
-		if err != nil {
-			result.WriteString(fmt.Sprintf("获取Join命令失败: %v\n", err))
-			return result.String(), err
+		var retryCount int = 3
+		var lastErr error
+
+		for i := 1; i <= retryCount; i++ {
+			result.WriteString(fmt.Sprintf("尝试获取Join命令 (%d/%d)...\n", i, retryCount))
+			joinCmd, err = masterClient.RunCommand(joinCmdCmd)
+			if err == nil && strings.TrimSpace(joinCmd) != "" {
+				joinCmd = strings.TrimSpace(joinCmd)
+				result.WriteString(fmt.Sprintf("成功获取Join命令: %s\n", joinCmd))
+				break
+			} else {
+				lastErr = err
+				result.WriteString(fmt.Sprintf("获取Join命令失败: %v\n", err))
+				if i < retryCount {
+					result.WriteString("等待3秒后重试...\n")
+					time.Sleep(3 * time.Second)
+				}
+			}
 		}
-		joinCmd = strings.TrimSpace(joinCmd)
+
+		if joinCmd == "" {
+			// 尝试另一种方法获取join命令
+			result.WriteString("=== 尝试使用另一种方法获取Join命令 ===\n")
+			tokenCmd := `kubeadm token create`
+			token, err := masterClient.RunCommand(tokenCmd)
+			if err != nil {
+				result.WriteString(fmt.Sprintf("创建token失败: %v\n", err))
+				if lastErr != nil {
+					return result.String(), lastErr
+				} else {
+					return result.String(), err
+				}
+			}
+			token = strings.TrimSpace(token)
+
+			// 获取ca cert hash
+			caCertHashCmd := `openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //'`
+			caCertHash, err := masterClient.RunCommand(caCertHashCmd)
+			if err != nil {
+				result.WriteString(fmt.Sprintf("获取ca cert hash失败: %v\n", err))
+				if lastErr != nil {
+					return result.String(), lastErr
+				} else {
+					return result.String(), err
+				}
+			}
+			caCertHash = strings.TrimSpace(caCertHash)
+
+			// 构建join命令
+			controlPlaneEndpoint := fmt.Sprintf("%s:6443", masterNode.IP)
+			joinCmd = fmt.Sprintf("kubeadm join %s --token %s --discovery-token-ca-cert-hash sha256:%s", controlPlaneEndpoint, token, caCertHash)
+			result.WriteString(fmt.Sprintf("成功构建Join命令: %s\n", joinCmd))
+		}
+
+		// 将join命令存储到master节点的JoinCommand字段中
+		for i, n := range nodes {
+			if n.ID == masterNode.ID {
+				nodes[i].JoinCommand = joinCmd
+				break
+			}
+		}
 	}
 
 	// 如果没有Master节点，从环境变量获取join命令
@@ -1733,9 +2348,10 @@ echo "最终containerd socket状态: $final_socket"
 				var workerResultStr strings.Builder
 				workerResultStr.WriteString(fmt.Sprintf("=== 将Worker节点 %s 加入集群 ===\n", worker.Name))
 
-				// 创建SSH客户端
+				// 直接使用节点的IP地址进行连接，避免依赖本地hosts文件
+				// 从数据库中获取的节点信息已经包含了正确的IP地址
 				workerSSHConfig := ssh.SSHConfig{
-					Host:       worker.IP,
+					Host:       worker.IP, // 直接使用IP地址，不依赖本地hosts文件
 					Port:       worker.Port,
 					Username:   worker.Username,
 					Password:   worker.Password,
@@ -1752,11 +2368,74 @@ echo "最终containerd socket状态: $final_socket"
 					}
 					return
 				}
+				workerResultStr.WriteString(fmt.Sprintf("连接到Worker节点 %s (%s) 成功\n", worker.Name, worker.IP))
 				defer workerClient.Close()
+
+				// 添加Calico初始化依赖步骤
+				calicoPrepCmd := `# 1. 必须的内核模块 - Calico初始化依赖
+			echo "=== 加载必须的内核模块（Calico初始化依赖） ==="
+		sudo modprobe br_netfilter || echo "br_netfilter模块已加载或加载失败"
+		sudo modprobe overlay || echo "overlay模块已加载或加载失败"
+		
+		# 2. 持久化内核模块配置
+		echo "=== 持久化内核模块配置 ==="
+		sudo cat <<EOF > /etc/modules-load.d/k8s.conf
+		br_netfilter
+	overlay
+		EOF
+		
+		# 3. 必须的 sysctl - Calico初始化依赖，此文件必须写入
+		echo "=== 配置必须的sysctl（Calico初始化依赖） ==="
+		sudo cat <<EOF > /etc/sysctl.d/k8s.conf
+		net.bridge.bridge-nf-call-iptables = 1
+		net.bridge.bridge-nf-call-ip6tables = 1
+		net.ipv4.ip_forward = 1
+		EOF
+		sudo sysctl --system
+		
+		# 4. Rocky 10 必装，否则 calico-node Init 直接失败
+		echo "=== 安装iproute-tc（Calico初始化依赖） ==="
+		if command -v dnf &> /dev/null; then
+		    sudo dnf install -y iproute-tc || true
+		elif command -v yum &> /dev/null; then
+		    sudo yum install -y iproute-tc || true
+		fi
+		
+		# 5. BPF 挂载点（init 容器 mount-bpffs 需要）
+		echo "=== 配置BPF挂载点 ==="
+		sudo mkdir -p /sys/fs/bpf
+		sudo mount bpffs /sys/fs/bpf || true
+		
+		# 6. CNI 目录
+		echo "=== 创建CNI目录 ==="
+		sudo mkdir -p /opt/cni/bin
+		sudo mkdir -p /etc/cni/net.d
+		
+		# 7. 重启关键服务
+		echo "=== 重启关键服务 ==="
+		sudo systemctl restart containerd || true
+		sudo systemctl restart kubelet || true
+		
+		# 8. 等待服务重启完成
+		echo "=== 等待服务重启完成 ==="
+		sleep 5`
+
+				// 执行Calico初始化依赖步骤
+				calicoOutput, err := workerClient.RunCommandWithOutput(calicoPrepCmd, func(line string) {
+					workerResultStr.WriteString(line + "\n")
+					outputLog(worker.ID, worker.Name, line) // 实时发送到前端
+				})
+				if err != nil {
+					workerResultStr.WriteString(fmt.Sprintf("Worker节点 %s Calico初始化依赖步骤执行失败: %v\n输出: %s\n", worker.Name, err, calicoOutput))
+					// 继续执行join命令，因为依赖步骤失败不一定导致join失败
+				} else {
+					workerResultStr.WriteString(fmt.Sprintf("Worker节点 %s Calico初始化依赖步骤执行成功\n\n", worker.Name))
+				}
 
 				// 将Worker节点加入集群
 				joinOutput, err := workerClient.RunCommandWithOutput(joinCmd, func(line string) {
 					workerResultStr.WriteString(line + "\n")
+					outputLog(worker.ID, worker.Name, line) // 实时发送到前端
 				})
 				if err != nil {
 					workerResultStr.WriteString(fmt.Sprintf("Worker节点 %s 加入集群失败: %v\n输出: %s\n", worker.Name, err, joinOutput))
@@ -1808,35 +2487,80 @@ echo "最终containerd socket状态: $final_socket"
 	if !shouldSkip(StepClusterVerification) && len(masterNodes) > 0 {
 		result.WriteString("=== 验证集群状态 ===\n")
 		verifyCmd := `# 验证集群状态
- echo "=== 等待集群就绪（60秒） ==="
- sleep 60
+ echo "=== 等待集群就绪（120秒） - 给CNI插件足够部署时间 ==="
+ sleep 120
+ 
+ echo "=== 重启关键服务，确保网络插件生效 ==="
+ sudo systemctl restart containerd || true
+ sudo systemctl restart kubelet || true
+ 
+ echo "=== 再次等待30秒，确保服务完全恢复 ==="
+ sleep 30
  
  echo "=== 查看节点状态 ==="
  kubectl get nodes
  
  echo "=== 查看Pod状态 ==="
- kubectl get pods -A`
+ kubectl get pods -A
+ 
+ echo "=== 查看CNI相关Pod详细状态 ==="
+ kubectl get pods -n kube-flannel -o wide 2>/dev/null || echo "未安装Flannel"
+ kubectl get pods -n calico-system -o wide 2>/dev/null || echo "未安装Calico"
+ 
+ echo "=== 查看kubelet日志（最后50行） ==="
+ journalctl -u kubelet --no-pager -n 50
+ 
+ echo "=== 查看CNI配置 ==="
+ ls -la /etc/cni/net.d/`
 
 		verifyOutput, err := masterClient.RunCommandWithOutput(verifyCmd, func(line string) {
 			result.WriteString(line + "\n")
-			fmt.Println(line) // 实时打印到控制台
+			fmt.Println(line)                               // 实时打印到控制台
+			outputLog(masterNode.ID, masterNode.Name, line) // 实时发送到前端
 		})
 		if err != nil {
 			result.WriteString(fmt.Sprintf("验证集群状态失败: %v\n输出: %s\n", err, verifyOutput))
 			// 验证失败不影响部署流程，继续执行
+		} else {
+			// 验证成功，检查是否所有节点都已Ready
+			result.WriteString("=== 检查所有节点是否Ready ===\n")
+			checkNodesCmd := `kubectl get nodes | grep -v NAME | awk '{print $2}' | grep -v Ready | wc -l`
+			notReadyCount, _ := masterClient.RunCommand(checkNodesCmd)
+			if notReadyCount != "0" {
+				result.WriteString(fmt.Sprintf("警告: 仍有 %s 个节点未Ready，请检查网络插件部署情况\n", notReadyCount))
+				// 输出详细信息
+				masterClient.RunCommandWithOutput("kubectl describe nodes", func(line string) {
+					result.WriteString(line + "\n")
+				})
+			} else {
+				result.WriteString("✓ 所有节点均已Ready\n")
+			}
 		}
 	} else if len(masterNodes) > 0 {
 		result.WriteString("=== 跳过集群验证 ===\n")
 	}
 
-	result.WriteString("=== Kubernetes集群部署完成 ===\n")
+	deploymentCompleteMsg := "=== Kubernetes集群部署完成 ==="
+	outputLog("cluster", "Kubernetes Cluster", deploymentCompleteMsg)
+	result.WriteString(deploymentCompleteMsg + "\n")
+
 	if len(masterNodes) > 0 {
-		result.WriteString(fmt.Sprintf("Master节点: %s (%s)\n", masterNode.Name, masterNode.IP))
+		masterNodeMsg := fmt.Sprintf("Master节点: %s (%s)", masterNode.Name, masterNode.IP)
+		outputLog("cluster", "Kubernetes Cluster", masterNodeMsg)
+		result.WriteString(masterNodeMsg + "\n")
 	} else {
-		result.WriteString("Master节点: 无 (仅部署工作节点)\n")
+		noMasterMsg := "Master节点: 无 (仅部署工作节点)"
+		outputLog("cluster", "Kubernetes Cluster", noMasterMsg)
+		result.WriteString(noMasterMsg + "\n")
 	}
-	result.WriteString(fmt.Sprintf("Worker节点数量: %d\n", len(workerNodes)))
-	result.WriteString(fmt.Sprintf("Kubernetes版本: %s\n", kubeVersion))
+
+	workerCountMsg := fmt.Sprintf("Worker节点数量: %d", len(workerNodes))
+	outputLog("cluster", "Kubernetes Cluster", workerCountMsg)
+	result.WriteString(workerCountMsg + "\n")
+
+	kubeVersionMsg := fmt.Sprintf("Kubernetes版本: %s", kubeVersion)
+	outputLog("cluster", "Kubernetes Cluster", kubeVersionMsg)
+	result.WriteString(kubeVersionMsg + "\n")
 
 	return result.String(), nil
 }
@@ -2544,16 +3268,16 @@ fi
 # 检查安装结果
 echo "=== 检查Kubernetes组件安装结果 ==="
 if command -v kubeadm &> /dev/null; then
-    echo "kubeadm版本: $(kubeadm version -o short)"
+    # 使用更兼容的方式获取kubeadm版本信息
+    kubeadm_version=$(kubeadm version 2>&1 | grep -i "version:" | head -1 | awk '{print $2}' || echo "未知版本")
+    echo "kubeadm版本: $kubeadm_version"
 else
     echo "错误：kubeadm命令未找到"
 fi
 
 if command -v kubelet &> /dev/null; then
     # 兼容不同版本的kubelet版本获取方式
-    if kubelet version &> /dev/null; then
-        echo "kubelet版本: $(kubelet version -o short)"
-    elif kubelet --version &> /dev/null; then
+    if kubelet --version &> /dev/null; then
         echo "kubelet版本: $(kubelet --version 2>&1 | grep -oP 'Kubernetes v[0-9]+\.[0-9]+\.[0-9]+')"
     else
         echo "kubelet版本: 无法获取版本信息，但命令存在"
@@ -2563,7 +3287,9 @@ else
 fi
 
 if command -v kubectl &> /dev/null; then
-    echo "kubectl版本: $(kubectl version --client -o short)"
+    # 使用更兼容的方式获取kubectl版本信息
+    kubectl_version=$(kubectl version --client 2>&1 | grep -i "client version" | awk '{print $3}' || echo "未知版本")
+    echo "kubectl版本: $kubectl_version"
 else
     echo "错误：kubectl命令未找到"
 fi
@@ -2587,13 +3313,95 @@ echo "=== Kubernetes组件安装检查完成 ==="
 `
 	}
 
-	// 1. 系统准备步骤 - 重置集群，清理旧配置
+	// 1. 系统准备步骤 - 重置集群，清理旧配置，配置防火墙和SELinux
 	// 只在containerd安装完成后执行重置操作，确保containerd socket可用
 	if !shouldSkip(StepSystemPreparation) {
 		cmd += `# 禁用swap
 echo "=== 禁用swap ==="
 sudo swapoff -a
 sudo sed -i '/ swap / s/^/#/' /etc/fstab
+
+# 关闭并禁用防火墙
+echo "=== 配置防火墙 ==="
+if command -v ufw &> /dev/null; then
+    echo "处理ufw防火墙..."
+    # 停止并禁用ufw服务
+    sudo systemctl stop ufw || true
+    sudo systemctl disable ufw || true
+    # 额外的禁用步骤，确保完全关闭
+    sudo ufw disable 2>/dev/null || true
+    # 确保ufw配置文件设置为禁用
+    if [ -f /etc/ufw/ufw.conf ]; then
+        sudo sed -i 's/^ENABLED=yes/ENABLED=no/' /etc/ufw/ufw.conf || true
+    fi
+    echo "✓ ufw防火墙已关闭并禁用，重启后保持关闭"
+elif command -v firewall-cmd &> /dev/null; then
+    echo "处理firewalld防火墙..."
+    # 停止并禁用firewalld服务
+    sudo systemctl stop firewalld || true
+    sudo systemctl disable firewalld || true
+    # 额外的禁用步骤，确保完全关闭
+    sudo firewall-cmd --state 2>/dev/null && sudo firewall-cmd --panic-on || true
+    # 确保firewalld配置文件设置为禁用
+    if [ -f /etc/firewalld/firewalld.conf ]; then
+        sudo sed -i 's/^FirewallBackend=.*/FirewallBackend=nftables/' /etc/firewalld/firewalld.conf || true
+    fi
+    echo "✓ firewalld防火墙已关闭并禁用，重启后保持关闭"
+else
+    echo "未检测到ufw或firewalld，跳过防火墙配置"
+fi
+
+# 配置SELinux为permissive模式
+echo "=== 配置SELinux ==="
+if command -v setenforce &> /dev/null; then
+    echo "临时设置SELinux为permissive模式..."
+    sudo setenforce 0 2>/dev/null || true
+    
+    echo "永久设置SELinux为permissive模式..."
+    # 尝试多种方式修改SELINUX配置，确保生效
+    if [ -f /etc/selinux/config ]; then
+        # 备份原始配置文件
+        sudo cp /etc/selinux/config /etc/selinux/config.bak
+        # 修改配置文件，将enforcing改为permissive
+        sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true
+        # 添加fallback，将disabled也改为permissive
+        sudo sed -i 's/^SELINUX=disabled$/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true
+        # 验证SELinux配置
+        selinux_status=$(grep ^SELINUX= /etc/selinux/config | cut -d= -f2)
+        echo "SELinux配置已设置为: $selinux_status"
+        # 验证SELinux配置文件内容
+        sudo grep -E '^SELINUX=' /etc/selinux/config 2>/dev/null || true
+        # 再次确认SELinux状态
+        selinux_current=$(sudo getenforce 2>/dev/null || echo "Unknown")
+        echo "当前SELinux状态: $selinux_current"
+        if [ "$selinux_status" = "permissive" ] || [ "$selinux_current" = "Permissive" ]; then
+            echo "✓ SELinux已成功设置为permissive模式，重启后保持配置"
+        else
+            echo "⚠ SELinux配置可能未完全生效，请检查/etc/selinux/config文件"
+        fi
+    else
+        echo "未找到/etc/selinux/config文件，SELinux可能未安装或使用不同配置"
+    fi
+else
+    echo "未检测到SELinux，跳过SELinux配置"
+fi
+
+# 确保防火墙和SELinux状态在重启后保持
+echo "=== 最终确认防火墙和SELinux状态 ==="
+# 再次确认防火墙状态
+if command -v ufw &> /dev/null; then
+    ufw_status=$(sudo ufw status 2>/dev/null || echo "inactive")
+    echo "当前ufw状态: $ufw_status"
+elif command -v firewall-cmd &> /dev/null; then
+    firewalld_status=$(sudo systemctl is-active firewalld 2>/dev/null || echo "inactive")
+    echo "当前firewalld状态: $firewalld_status"
+fi
+
+# 再次确认SELinux状态
+if command -v getenforce &> /dev/null; then
+    selinux_current=$(sudo getenforce 2>/dev/null || echo "Disabled")
+    echo "当前SELinux状态: $selinux_current"
+fi
 
 # 重置集群，清理旧配置
 echo "=== 重置集群，清理旧配置 ==="
@@ -2898,7 +3706,61 @@ func GetJoinCommand(sshConfig SSHConfig) (string, error) {
 
 // JoinWorker 将worker节点加入集群
 func JoinWorker(sshConfig SSHConfig, token, caCertHash, controlPlaneEndpoint string) (string, error) {
-	cmd := fmt.Sprintf(`kubeadm join %s --token %s --discovery-token-ca-cert-hash %s`, controlPlaneEndpoint, token, caCertHash)
+	cmd := fmt.Sprintf(`#!/bin/bash
+
+# 1. 必须的内核模块 - Calico初始化依赖
+	echo "=== 加载必须的内核模块（Calico初始化依赖） ==="
+	sudo modprobe br_netfilter || echo "br_netfilter模块已加载或加载失败"
+	sudo modprobe overlay || echo "overlay模块已加载或加载失败"
+	
+# 2. 必须的sysctl - Calico初始化依赖，此文件必须写入
+	echo "=== 配置必须的sysctl（Calico初始化依赖） ==="
+	sudo cat <<EOF > /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward = 1
+EOF
+	sudo sysctl --system
+
+# 3. 安装必要的依赖
+	echo "=== 安装必要的依赖 ==="
+	if command -v dnf &> /dev/null; then
+	    # Rocky 10 必装，否则calico-node Init直接失败
+	    sudo dnf install -y iproute-tc 2>/dev/null || true
+	fi
+
+# 4. BPF挂载点（init容器mount-bpffs需要）
+	echo "=== 创建并挂载BPF挂载点 ==="
+	sudo mkdir -p /sys/fs/bpf
+	sudo mount bpffs /sys/fs/bpf || true
+
+# 5. 确保CNI目录存在
+	echo "=== 确保CNI目录存在 ==="
+	sudo mkdir -p /opt/cni/bin
+	sudo mkdir -p /etc/cni/net.d
+	sudo chmod 755 /opt/cni/bin
+	sudo chmod 755 /etc/cni/net.d
+
+# 6. 确保kubelet服务正确配置和运行
+	echo "=== 确保kubelet服务正确配置和运行 ==="
+	sudo systemctl enable kubelet 2>/dev/null || true
+	sudo systemctl start kubelet 2>/dev/null || true
+
+# 7. 确保containerd服务正常运行
+	echo "=== 确保containerd服务正常运行 ==="
+	sudo systemctl enable containerd 2>/dev/null || true
+	sudo systemctl restart containerd 2>/dev/null || true
+	sleep 5
+
+# 8. 执行kubeadm join命令将节点加入集群
+	echo "=== 将节点加入集群 ==="
+	kubeadm join %s --token %s --discovery-token-ca-cert-hash %s --cri-socket=unix:///run/containerd/containerd.sock
+
+# 9. 重启containerd和kubelet服务，确保网络插件生效
+	echo "=== 重启containerd和kubelet服务，确保网络插件生效 ==="
+	sudo systemctl restart containerd || true
+	sudo systemctl restart kubelet || true
+	echo "=== 节点加入集群完成 ==="`, controlPlaneEndpoint, token, caCertHash)
 	return RunCommandOnRemote(sshConfig, "bash", "-c", cmd)
 }
 

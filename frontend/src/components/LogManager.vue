@@ -72,7 +72,7 @@ import axios from 'axios'
 // API 配置
 const apiClient = axios.create({
   baseURL: 'http://localhost:8080',
-  timeout: 300000 // 5分钟超时，适应Kubernetes组件安装的耗时过程
+  timeout: 1800000 // 30分钟超时，适应Kubernetes组件安装的耗时过程
 })
 
 // SSE配置
@@ -84,6 +84,7 @@ const logs = ref([])
 const expandedLogs = ref([])
 const sseStatus = ref('disconnected') // connected, connecting, disconnected, error
 const sseStatusText = ref('未连接')
+const justClearedLogs = ref(false) // 标记刚刚清除了日志，避免在组件激活时重新获取旧日志
 let logInterval = null
 
 // 定义组件的属性和事件
@@ -99,6 +100,11 @@ const emit = defineEmits(['showMessage'])
 
 // 获取日志
 const getLogs = async () => {
+  // 如果刚刚清除了日志，跳过获取日志，避免重新获取旧日志
+  if (justClearedLogs.value) {
+    return
+  }
+  
   try {
     const response = await apiClient.get('/logs')
     const allLogs = response.data.logs || []
@@ -118,10 +124,20 @@ const clearLogs = async () => {
   try {
     await apiClient.delete('/logs')
     logs.value = []
+    expandedLogs.value = []
+    justClearedLogs.value = true // 标记刚刚清除了日志，避免在组件激活时重新获取旧日志
     emit('showMessage', { text: '日志已清除!', type: 'success' })
+    
+    // 重启SSE连接，确保连接状态正确
+    initSSE()
   } catch (error) {
     // 静默处理清除日志错误，不显示用户错误信息
     logs.value = []
+    expandedLogs.value = []
+    justClearedLogs.value = true // 标记刚刚清除了日志，避免在组件激活时重新获取旧日志
+    
+    // 重启SSE连接，确保连接状态正确
+    initSSE()
   }
 }
 
@@ -150,10 +166,15 @@ const formatDate = (dateString) => {
 
 // 初始化SSE连接
 const initSSE = () => {
-  // 如果已经有连接且状态为OPEN，直接返回
-  if (eventSource && eventSource.readyState === EventSource.OPEN) {
-    sseStatus.value = 'connected'
-    sseStatusText.value = '已连接'
+  // 如果已经有连接且状态为OPEN或CONNECTING，直接返回
+  if (eventSource && (eventSource.readyState === EventSource.OPEN || eventSource.readyState === EventSource.CONNECTING)) {
+    if (eventSource.readyState === EventSource.OPEN) {
+      sseStatus.value = 'connected'
+      sseStatusText.value = '已连接'
+    } else {
+      sseStatus.value = 'connecting'
+      sseStatusText.value = '连接中...'
+    }
     return
   }
   
@@ -161,8 +182,9 @@ const initSSE = () => {
   if (eventSource) {
     try {
       eventSource.close()
+      console.log('已关闭现有SSE连接')
     } catch (error) {
-      // 静默处理关闭连接错误
+      console.error('关闭现有SSE连接失败:', error)
     }
     eventSource = null
   }
@@ -176,26 +198,34 @@ const initSSE = () => {
     const apiBaseUrl = apiClient.defaults.baseURL
     const sseUrl = `${apiBaseUrl}/logs/stream`
     
+    console.log('正在创建SSE连接:', sseUrl)
     eventSource = new EventSource(sseUrl, { withCredentials: false })
     
     // 连接打开时的处理
     eventSource.onopen = () => {
+      console.log('SSE连接已建立')
       sseStatus.value = 'connected'
       sseStatusText.value = '已连接'
+      justClearedLogs.value = false // 连接成功后，重置justClearedLogs标记，允许重新获取日志
     }
     
     // 接收消息时的处理
     eventSource.onmessage = (event) => {
       try {
         const logEntry = JSON.parse(event.data)
+        // 忽略心跳事件
+        if (logEntry.type === 'heartbeat') {
+          return
+        }
         // 检查日志是否已存在，避免重复
-        const exists = logs.value.some(log => log.id === logEntry.id)
+        const exists = logs.value.some(log => log && log.id === logEntry.id)
         if (!exists) {
           // 将新日志添加到数组开头
           logs.value.unshift(logEntry)
         }
       } catch (error) {
         console.error('解析SSE日志失败:', error)
+        console.error('原始日志数据:', event.data)
         // 添加错误日志到界面
         logs.value.unshift({
           id: `error-${Date.now()}`,
@@ -222,25 +252,28 @@ const initSSE = () => {
     // 连接错误时的处理
     eventSource.onerror = (error) => {
       console.error('SSE连接错误:', error)
-      sseStatus.value = 'error'
-      sseStatusText.value = `连接错误: ${error.message || '未知错误'}`
-      // 添加错误日志到界面
-      logs.value.unshift({
-        id: `error-${Date.now()}`,
-        nodeName: '系统',
-        operation: 'SSEError',
-        command: '建立连接',
-        output: `实时日志连接错误: ${error.message || '未知错误'}`,
-        status: 'failed',
-        createdAt: new Date(),
-        updatedAt: new Date()
-      })
-      eventSource.close()
+      
+      // 检查eventSource.readyState，只有当连接已关闭时才重新连接
+      if (eventSource && eventSource.readyState === EventSource.CLOSED) {
+        sseStatus.value = 'error'
+        sseStatusText.value = '连接已关闭，正在重试...'
+        // 尝试重新连接
+        reconnectSSE()
+      } else if (eventSource && eventSource.readyState === EventSource.CONNECTING) {
+        // 连接中状态的错误，暂时不处理，等待onopen或onclose事件
+        sseStatus.value = 'connecting'
+        sseStatusText.value = '连接中...'
+      } else {
+        sseStatus.value = 'error'
+        sseStatusText.value = '连接错误，正在重试...'
+        // 尝试重新连接
+        reconnectSSE()
+      }
     }
   } catch (error) {
     console.error('创建SSE连接失败:', error)
     sseStatus.value = 'error'
-    sseStatusText.value = `连接错误: ${error.message || '未知错误'}`
+    sseStatusText.value = '创建连接失败，正在重试...'
     // 添加错误日志到界面
     logs.value.unshift({
       id: `error-${Date.now()}`,
@@ -272,18 +305,26 @@ const reconnectSSE = () => {
 
 // 页面加载时获取日志
 onMounted(() => {
-  getLogs()
-  // 初始化SSE连接
+  // 页面刷新时，先初始化SSE连接，等待连接成功后再获取日志
   initSSE()
+  // 延迟1秒后获取日志，给SSE连接足够的时间建立
+  setTimeout(() => {
+    getLogs()
+  }, 1000)
 })
 
 // 组件激活时启动日志刷新定时器
 onActivated(() => {
-  getLogs()
-  // 确保SSE连接已建立
-  if (!eventSource || eventSource.readyState !== EventSource.OPEN) {
+  // 组件激活时，只在SSE连接已建立且不是刚刚清除日志时获取日志
+  if ((!eventSource || eventSource.readyState !== EventSource.OPEN) && !justClearedLogs.value) {
     initSSE()
   }
+  // 延迟500毫秒后获取日志，避免频繁调用
+  setTimeout(() => {
+    if (!justClearedLogs.value) {
+      getLogs()
+    }
+  }, 500)
 })
 
 // 组件停用时清除日志刷新定时器和SSE连接

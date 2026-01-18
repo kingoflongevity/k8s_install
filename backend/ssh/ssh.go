@@ -67,7 +67,8 @@ func NewSSHClient(config SSHConfig) (*SSHClient, error) {
 	addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
 	client, err := ssh.Dial("tcp", addr, sshConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to %s: %v", addr, err)
+		// 提供更详细的错误信息，包括主机名解析失败的情况
+		return nil, fmt.Errorf("failed to create SSH client: failed to connect to %s:%d: %v", config.Host, config.Port, err)
 	}
 
 	return &SSHClient{client: client}, nil
@@ -323,6 +324,18 @@ func (c *SSHClient) RunCommandWithOutput(cmd string, callback OutputCallback) (s
 	logOutput += fmt.Sprintf("执行耗时: %v\n", executionDuration)
 	logOutput += fmt.Sprintf("\n=== 标准输出 ===\n%s\n", stdout)
 	logOutput += fmt.Sprintf("=== 标准错误 ===\n%s\n", stderr)
+
+	// 将完整日志通过callback输出到前台实时部署日志
+	callback("=== SSH命令执行日志 ===")
+	callback(fmt.Sprintf("命令: %s", cmd))
+	callback(fmt.Sprintf("开始时间: %s", executionStartTime.Format("2006-01-02 15:04:05")))
+	callback(fmt.Sprintf("结束时间: %s", executionEndTime.Format("2006-01-02 15:04:05")))
+	callback(fmt.Sprintf("执行耗时: %v", executionDuration))
+	callback("=== 标准输出 ===")
+	callback(stdout)
+	callback("=== 标准错误 ===")
+	callback(stderr)
+	callback("=== 日志结束 ===")
 
 	// 打印完整日志到控制台
 	fmt.Println(logOutput)

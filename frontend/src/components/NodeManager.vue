@@ -24,6 +24,7 @@
             <div class="form-group">
               <label for="nodeName">节点名称:</label>
               <input type="text" id="nodeName" v-model="newNode.name" placeholder="node-1" required>
+              <small class="form-help">此名称将作为内网解析时的名称使用</small>
             </div>
             <div class="form-group">
               <label for="nodeIPAdd">IP 地址:</label>
@@ -576,6 +577,12 @@ onActivated(() => {
 .form-group textarea {
   resize: vertical;
   min-height: 100px;
+}
+
+.form-help {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: -4px;
 }
 
 .form-actions {

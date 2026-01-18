@@ -18,6 +18,7 @@ type Node struct {
 	Status           string    `json:"status"`           // online, offline, ready, deploying
 	ContainerRuntime string    `json:"containerRuntime"` // 容器运行时类型：containerd, cri-o
 	OS               string    `json:"os"`               // 操作系统类型：ubuntu, centos, debian, rocky等
+	JoinCommand      string    `json:"joinCommand,omitempty"` // 集群加入命令
 	CreatedAt        time.Time `json:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt"`
 }

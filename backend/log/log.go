@@ -3,6 +3,7 @@ package log
 import (
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
 
 	// 使用纯Go实现的SQLite驱动，不需要CGO
@@ -22,6 +23,12 @@ type LogEntry struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+// LogSubscription 日志订阅结构体
+type LogSubscription struct {
+	Ch <-chan LogEntry
+	Id string
+}
+
 // LogManager 日志管理器接口
 type LogManager interface {
 	// CreateLog 创建新日志
@@ -32,15 +39,19 @@ type LogManager interface {
 	GetLogsByNode(nodeID string) ([]LogEntry, error)
 	// ClearLogs 清除所有日志
 	ClearLogs() error
+	// SubscribeLogs 订阅日志事件
+	SubscribeLogs() LogSubscription
+	// UnsubscribeLogs 取消订阅日志事件
+	UnsubscribeLogs(sub LogSubscription)
 }
-
-// BroadcastCallback 日志广播回调函数类型
-type BroadcastCallback func(LogEntry)
 
 // SqliteLogManager SQLite日志管理器
 type SqliteLogManager struct {
-	DB                *sql.DB
-	broadcastCallback BroadcastCallback
+	DB                  *sql.DB
+	broadcastChan       chan LogEntry
+	subscribers         map[string]chan LogEntry
+	mutex               sync.RWMutex
+	broadcastChanClosed bool
 }
 
 // NewSqliteLogManager 创建新的SQLite日志管理器
@@ -85,14 +96,95 @@ func NewSqliteLogManager(db *sql.DB) (*SqliteLogManager, error) {
 		}
 	}
 
-	return &SqliteLogManager{
-		DB: db,
-	}, nil
+	// 初始化广播通道和订阅者映射
+	broadcastChan := make(chan LogEntry, 100)
+
+	// 启动广播协程
+	manager := &SqliteLogManager{
+		DB:                  db,
+		broadcastChan:       broadcastChan,
+		subscribers:         make(map[string]chan LogEntry),
+		broadcastChanClosed: false,
+	}
+
+	// 启动广播协程
+	go manager.broadcastLogs()
+
+	return manager, nil
 }
 
-// SetBroadcastCallback 设置日志广播回调函数
-func (m *SqliteLogManager) SetBroadcastCallback(callback BroadcastCallback) {
-	m.broadcastCallback = callback
+// broadcastLogs 广播日志到所有订阅者
+func (m *SqliteLogManager) broadcastLogs() {
+	for logEntry := range m.broadcastChan {
+		m.mutex.RLock()
+		// 创建订阅者列表的副本，避免在遍历过程中修改
+		subscribers := make([]chan LogEntry, 0, len(m.subscribers))
+		for _, ch := range m.subscribers {
+			subscribers = append(subscribers, ch)
+		}
+		m.mutex.RUnlock()
+
+		// 发送日志到所有订阅者
+		for _, ch := range subscribers {
+			select {
+			case ch <- logEntry:
+				// 日志发送成功
+			default:
+				// 通道已满，跳过此日志以避免阻塞
+				// 可以考虑关闭这个通道，因为订阅者可能已经断开连接
+				m.mutex.Lock()
+				// 遍历所有订阅者，寻找对应的通道并删除
+				for id, subCh := range m.subscribers {
+					if subCh == ch {
+						close(subCh)
+						delete(m.subscribers, id)
+						break
+					}
+				}
+				m.mutex.Unlock()
+			}
+		}
+	}
+
+	// 广播通道关闭，关闭所有订阅者通道
+	m.mutex.Lock()
+	for id, ch := range m.subscribers {
+		close(ch)
+		delete(m.subscribers, id)
+	}
+	m.mutex.Unlock()
+}
+
+// SubscribeLogs 订阅日志事件
+func (m *SqliteLogManager) SubscribeLogs() LogSubscription {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	// 创建一个带缓冲的通道，避免阻塞
+	ch := make(chan LogEntry, 100)
+	// 生成唯一ID
+	id := fmt.Sprintf("sub_%d", time.Now().UnixNano())
+	// 将通道存储到订阅者映射中
+	m.subscribers[id] = ch
+	// 返回订阅结构体
+	return LogSubscription{
+		Ch: ch,
+		Id: id,
+	}
+}
+
+// UnsubscribeLogs 取消订阅日志事件
+func (m *SqliteLogManager) UnsubscribeLogs(sub LogSubscription) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	// 检查订阅ID是否存在
+	if ch, exists := m.subscribers[sub.Id]; exists {
+		// 关闭通道
+		close(ch)
+		// 从订阅者列表中移除
+		delete(m.subscribers, sub.Id)
+	}
 }
 
 // CreateLog 创建新日志
@@ -123,9 +215,12 @@ func (m *SqliteLogManager) CreateLog(log LogEntry) error {
 		)
 	}
 
-	// 调用广播回调函数，将日志发送到SSE客户端
-	if m.broadcastCallback != nil {
-		m.broadcastCallback(log)
+	// 将日志发送到广播通道，由broadcastLogs协程处理
+	select {
+	case m.broadcastChan <- log:
+		// 日志发送成功到广播通道
+	default:
+		// 广播通道已满，跳过此日志以避免阻塞
 	}
 
 	return err

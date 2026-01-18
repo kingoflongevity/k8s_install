@@ -30,20 +30,6 @@
                 >
               </div>
             </div>
-            
-            <!-- 生产环境：控制平面端点，用于高可用性 -->
-            <div class="form-row">
-              <div class="form-group">
-                <label for="controlPlaneEndpoint">控制平面端点 (Control Plane Endpoint):</label>
-                <input 
-                  type="text" 
-                  id="controlPlaneEndpoint" 
-                  v-model="config.controlPlaneEndpoint" 
-                  placeholder="kube-api.example.com:6443" 
-                  title="用于高可用性集群的负载均衡器地址"
-                >
-              </div>
-            </div>
           </div>
           
           <!-- 网络配置 -->
@@ -71,84 +57,47 @@
                 >
               </div>
             </div>
-            
-            <div class="form-row">
-              <div class="form-group">
-                <label for="dnsDomain">DNS 域名:</label>
-                <input 
-                  type="text" 
-                  id="dnsDomain" 
-                  v-model="config.dnsDomain" 
-                  placeholder="cluster.local" 
-                  required
-                >
-              </div>
-              <div class="form-group">
-                <label for="serviceNodePortRange">Service NodePort 范围:</label>
-                <input 
-                  type="text" 
-                  id="serviceNodePortRange" 
-                  v-model="config.serviceNodePortRange" 
-                  placeholder="30000-32767"
-                >
-              </div>
-            </div>
           </div>
           
-          <!-- 生产环境：节点注册配置 -->
+          <!-- 高级配置（可选） -->
           <div class="form-section">
-            <h4>节点注册配置</h4>
-            <div class="form-row">
-              <div class="form-group">
-                <label for="nodeName">节点名称:</label>
-                <input 
-                  type="text" 
-                  id="nodeName" 
-                  v-model="config.nodeName" 
-                  placeholder="自动生成"
-                >
+            <h4 @click="toggleAdvancedConfig" class="advanced-toggle">
+              高级配置
+              <span class="toggle-icon">{{ showAdvancedConfig ? '▼' : '▶' }}</span>
+            </h4>
+            <div v-if="showAdvancedConfig" class="advanced-config">
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="controlPlaneEndpoint">控制平面端点:</label>
+                  <input 
+                    type="text" 
+                    id="controlPlaneEndpoint" 
+                    v-model="config.controlPlaneEndpoint" 
+                    placeholder="kube-api.example.com:6443"
+                    title="用于高可用性集群的负载均衡器地址"
+                  >
+                </div>
               </div>
-              <div class="form-group">
-                <label for="criSocket">CRI Socket:</label>
-                <input 
-                  type="text" 
-                  id="criSocket" 
-                  v-model="config.criSocket" 
-                  placeholder="/run/containerd/containerd.sock"
-                >
-              </div>
-            </div>
-          </div>
-          
-          <!-- 生产环境：API服务器配置 -->
-          <div class="form-section">
-            <h4>API服务器配置</h4>
-            <div class="form-row">
-              <div class="form-group">
-                <label for="timeoutForControlPlane">控制平面超时时间 (秒):</label>
-                <input 
-                  type="number" 
-                  id="timeoutForControlPlane" 
-                  v-model.number="config.timeoutForControlPlane" 
-                  placeholder="300"
-                  min="30"
-                >
-              </div>
-            </div>
-          </div>
-          
-          <!-- 生产环境：etcd配置 -->
-          <div class="form-section">
-            <h4>etcd配置</h4>
-            <div class="form-row">
-              <div class="form-group">
-                <label for="etcdDataDir">etcd 数据目录:</label>
-                <input 
-                  type="text" 
-                  id="etcdDataDir" 
-                  v-model="config.etcdDataDir" 
-                  placeholder="/var/lib/etcd"
-                >
+              
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="dnsDomain">DNS 域名:</label>
+                  <input 
+                    type="text" 
+                    id="dnsDomain" 
+                    v-model="config.dnsDomain" 
+                    placeholder="cluster.local"
+                  >
+                </div>
+                <div class="form-group">
+                  <label for="criSocket">CRI Socket:</label>
+                  <input 
+                    type="text" 
+                    id="criSocket" 
+                    v-model="config.criSocket" 
+                    placeholder="/run/containerd/containerd.sock"
+                  >
+                </div>
               </div>
             </div>
           </div>
@@ -185,9 +134,14 @@
     </div>
     
     <!-- 部署日志区域 -->
-    <div v-if="deployLogs" class="logs-section">
-      <h3>部署日志</h3>
-      <div class="logs-container">
+    <div class="logs-section">
+      <div class="logs-header">
+        <h3>部署日志</h3>
+        <button class="btn btn-sm btn-secondary" @click="toggleLogs">
+          {{ showLogs ? '隐藏日志' : '显示日志' }}
+        </button>
+      </div>
+      <div v-if="showLogs" class="logs-container">
         <pre>{{ deployLogs }}</pre>
       </div>
     </div>
@@ -209,6 +163,8 @@ const isDeploying = ref(false)
 const deployLogs = ref('')
 const joinCommand = ref('')
 let logInterval = null
+const showAdvancedConfig = ref(false)
+const showLogs = ref(true)
 
 // 部署配置
 const config = ref({
@@ -218,12 +174,18 @@ const config = ref({
   podSubnet: '10.244.0.0/16',
   serviceSubnet: '10.96.0.0/12',
   dnsDomain: 'cluster.local',
-  serviceNodePortRange: '30000-32767', // 生产环境：Service NodePort范围
-  nodeName: '', // 生产环境：节点名称
   criSocket: '/run/containerd/containerd.sock', // 生产环境：CRI Socket
-  timeoutForControlPlane: 300, // 生产环境：API服务器超时时间
-  etcdDataDir: '/var/lib/etcd' // 生产环境：etcd数据目录
 })
+
+// 切换高级配置显示
+const toggleAdvancedConfig = () => {
+  showAdvancedConfig.value = !showAdvancedConfig.value
+}
+
+// 切换日志显示
+const toggleLogs = () => {
+  showLogs.value = !showLogs.value
+}
 
 // 定义组件的属性和事件
 const props = defineProps({
@@ -259,7 +221,6 @@ const initCluster = async () => {
     const masterNodeId = masterNodes[0].id
     
     const kubeadmConfig = {
-      masterNodeId: masterNodeId,
       config: {
         apiVersion: 'kubeadm.k8s.io/v1beta3',
         kind: 'InitConfiguration',
@@ -269,7 +230,6 @@ const initCluster = async () => {
             bindPort: 6443
           },
           nodeRegistration: {
-            name: config.value.nodeName,
             criSocket: config.value.criSocket
           }
         },
@@ -279,16 +239,7 @@ const initCluster = async () => {
           networking: {
             podSubnet: config.value.podSubnet,
             serviceSubnet: config.value.serviceSubnet,
-            dnsDomain: config.value.dnsDomain,
-            serviceNodePortRange: config.value.serviceNodePortRange
-          },
-          api: {
-            timeoutForControlPlane: config.value.timeoutForControlPlane
-          },
-          etcd: {
-            local: {
-              dataDir: config.value.etcdDataDir
-            }
+            dnsDomain: config.value.dnsDomain
           }
         }
       }
@@ -299,7 +250,7 @@ const initCluster = async () => {
     emit('showMessage', { text: '集群初始化成功!', type: 'success' })
 
     // 获取加入命令
-    await getJoinCommand(masterNodeId)
+    await getJoinCommand()
   } catch (error) {
     deployLogs.value = error.response?.data?.error || error.message
     emit('showMessage', { text: '集群初始化失败: ' + (error.response?.data?.error || error.message), type: 'error' })
@@ -343,13 +294,9 @@ const resetCluster = async () => {
 }
 
 // 获取加入命令
-const getJoinCommand = async (masterNodeId) => {
+const getJoinCommand = async () => {
   try {
-    const response = await apiClient.get('/kubeadm/join-command', {
-      params: {
-        masterNodeId: masterNodeId
-      }
-    })
+    const response = await apiClient.get('/kubeadm/join-command')
     joinCommand.value = response.data.command
   } catch (error) {
     emit('showMessage', { text: '获取加入命令失败: ' + error.message, type: 'error' })
@@ -568,6 +515,49 @@ onDeactivated(() => {
   padding-bottom: 8px;
   border-bottom: 2px solid var(--primary-color);
   display: inline-block;
+  cursor: default;
+}
+
+/* 高级配置切换 */
+.advanced-toggle {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.3s ease;
+}
+
+.advanced-toggle:hover {
+  color: var(--primary-color);
+}
+
+.toggle-icon {
+  font-size: 0.8rem;
+  transition: transform 0.3s ease;
+}
+
+.advanced-config {
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px dashed var(--border-color);
+}
+
+/* 日志头部 */
+.logs-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.logs-header h3 {
+  margin: 0;
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  text-transform: none;
 }
 
 /* 表单样式 */

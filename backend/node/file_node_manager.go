@@ -324,8 +324,12 @@ func (m *FileNodeManager) ConfigureSSHPasswdless() error {
 
 	// 1. 收集所有节点的公钥
 	nodePublicKeys := make(map[string]string)
+	nodeIPMap := make(map[string]string) // 节点名称到IP的映射
 
 	for _, node := range allNodes {
+		fmt.Printf("获取节点 %s (%s) 的公钥...\n", node.Name, node.IP)
+		nodeIPMap[node.Name] = node.IP
+
 		// 创建SSH客户端
 		sshConfig := ssh.SSHConfig{
 			Host:       node.IP,
@@ -363,11 +367,14 @@ func (m *FileNodeManager) ConfigureSSHPasswdless() error {
 		}
 
 		nodePublicKeys[node.Name] = strings.TrimSpace(publicKey)
+		fmt.Printf("  成功获取节点 %s 的公钥\n", node.Name)
 		client.Close()
 	}
 
-	// 2. 将所有公钥分发到每个节点的authorized_keys文件中
+	// 2. 配置每个节点的authorized_keys文件和hosts文件
+	fmt.Println("\n=== 2. 配置每个节点的authorized_keys文件和hosts文件 ===")
 	for _, targetNode := range allNodes {
+		fmt.Printf("\n配置节点: %s (%s)\n", targetNode.Name, targetNode.IP)
 		// 创建SSH客户端
 		sshConfig := ssh.SSHConfig{
 			Host:       targetNode.IP,
@@ -382,16 +389,130 @@ func (m *FileNodeManager) ConfigureSSHPasswdless() error {
 			return fmt.Errorf("failed to create SSH client for node %s: %v", targetNode.Name, err)
 		}
 
-		// 清空authorized_keys文件
-		_, err = client.RunCommand("> ~/.ssh/authorized_keys")
+		// 确保.ssh目录存在并设置正确权限
+		fmt.Printf("  1. 设置.ssh目录权限...\n")
+		permCmd := "mkdir -p ~/.ssh && chmod 755 ~ && chmod 700 ~/.ssh"
+		_, err = client.RunCommand(permCmd)
 		if err != nil {
 			client.Close()
-			return fmt.Errorf("failed to clear authorized_keys for node %s: %v", targetNode.Name, err)
+			return fmt.Errorf("failed to set .ssh directory permissions for node %s: %v", targetNode.Name, err)
 		}
 
-		// 添加所有节点的公钥到authorized_keys文件
+		// 2. 更新hosts文件，添加所有节点的名称和IP
+		fmt.Printf("  2. 更新hosts文件，添加所有节点的名称和IP...\n")
+		// 构建hosts文件内容，包含所有节点的IP和名称对应关系
+		hostsContent := "# Kubernetes集群节点解析\n"
+		for nodeName, nodeIP := range nodeIPMap {
+			hostsContent += fmt.Sprintf("%s %s\n", nodeIP, nodeName)
+		}
+
+		// 显示构建的hosts文件内容，用于调试
+		fmt.Printf("  构建的hosts文件内容: %s\n", hostsContent)
+
+		// 更新hosts文件
+		updateCmd := fmt.Sprintf(`
+# 备份原有的hosts文件
+if [ -f /etc/hosts ]; then
+    sudo cp /etc/hosts /etc/hosts.bak
+    echo "已备份原有的hosts文件到/etc/hosts.bak"
+fi
+
+# 保留原有的hosts文件内容（除了已存在的Kubernetes集群节点解析）
+echo "正在处理hosts文件，保留默认条目..."
+if [ -f /etc/hosts ]; then
+    # 移除已存在的Kubernetes集群节点解析
+    if grep -q "Kubernetes集群节点解析" /etc/hosts; then
+        echo "发现已存在的Kubernetes集群节点解析，正在移除..."
+        sudo sed -i '/Kubernetes集群节点解析/,$d' /etc/hosts
+    fi
+    # 将新的hosts内容追加到文件末尾
+    echo "正在将新的Kubernetes集群节点解析追加到hosts文件..."
+    sudo bash -c "cat >> /etc/hosts << 'EOF'
+%s
+EOF"
+else
+    # 如果hosts文件不存在，直接使用新文件
+    echo "hosts文件不存在，直接使用新文件..."
+    sudo bash -c "cat > /etc/hosts << 'EOF'
+%s
+EOF"
+fi
+
+# 设置正确的权限
+sudo chmod 644 /etc/hosts
+echo "设置/etc/hosts文件权限为644"
+
+# 刷新DNS缓存，使hosts文件生效
+if command -v systemctl &> /dev/null; then
+    # 对于使用systemd的系统，重启nscd服务（如果存在）
+    if systemctl list-units --type=service | grep -q nscd; then
+        echo "重启nscd服务，刷新DNS缓存..."
+        sudo systemctl restart nscd
+    fi
+    # 重启systemd-resolved服务（如果存在）
+    if systemctl list-units --type=service | grep -q systemd-resolved; then
+        echo "重启systemd-resolved服务，刷新DNS缓存..."
+        sudo systemctl restart systemd-resolved
+    fi
+else
+    # 对于其他系统，使用nscd命令（如果存在）
+    if command -v nscd &> /dev/null; then
+        echo "刷新nscd缓存..."
+        sudo nscd -i hosts
+    fi
+fi
+
+# 等待2秒，确保DNS缓存刷新完成
+sleep 2
+
+# 验证主机名解析是否生效
+echo "验证主机名解析..."
+resolv_success=true
+for host in $(cat /etc/hosts | grep -v '^#' | grep -v '^$' | awk '{print $2}'); do
+    if [ "$host" != "localhost" ] && [ "$host" != "localhost.localdomain" ]; then
+        echo "测试解析主机名: $host"
+        ping -c 1 $host > /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            echo "✓ 主机名 $host 解析成功"
+        else
+            echo "✗ 主机名 $host 解析失败"
+            resolv_success=false
+        fi
+    fi
+done
+
+# 显示更新后的hosts文件内容
+echo "=== 更新后的hosts文件内容 ==="
+sudo tail -20 /etc/hosts
+echo "=== 内容结束 ==="
+
+# 最终验证
+if grep -q "Kubernetes集群节点解析" /etc/hosts; then
+    echo "✓ hosts文件更新成功，包含Kubernetes集群节点解析"
+else
+    echo "✗ hosts文件更新失败，未找到Kubernetes集群节点解析"
+fi
+`, hostsContent, hostsContent)
+
+		_, err = client.RunCommand(updateCmd)
+		if err != nil {
+			client.Close()
+			return fmt.Errorf("failed to update hosts file for node %s: %v", targetNode.Name, err)
+		}
+
+		// 3. 清空并重新创建authorized_keys文件
+		fmt.Printf("  3. 重新创建authorized_keys文件...\n")
+		_, err = client.RunCommand("rm -f ~/.ssh/authorized_keys && touch ~/.ssh/authorized_keys")
+		if err != nil {
+			client.Close()
+			return fmt.Errorf("failed to recreate authorized_keys for node %s: %v", targetNode.Name, err)
+		}
+
+		// 4. 添加所有节点的公钥到authorized_keys文件
+		fmt.Printf("  4. 添加所有节点的公钥...\n")
 		for nodeName, publicKey := range nodePublicKeys {
-			// 添加公钥到authorized_keys文件，包括自己的
+			fmt.Printf("    添加节点 %s 的公钥...\n", nodeName)
+			// 使用echo命令添加公钥，确保格式正确
 			cmd := fmt.Sprintf("echo '%s' >> ~/.ssh/authorized_keys", publicKey)
 			_, err = client.RunCommand(cmd)
 			if err != nil {
@@ -400,23 +521,41 @@ func (m *FileNodeManager) ConfigureSSHPasswdless() error {
 			}
 		}
 
-		// 设置authorized_keys文件权限
+		// 5. 设置authorized_keys文件权限
+		fmt.Printf("  5. 设置authorized_keys文件权限...\n")
 		_, err = client.RunCommand("chmod 600 ~/.ssh/authorized_keys")
 		if err != nil {
 			client.Close()
 			return fmt.Errorf("failed to set authorized_keys permissions for node %s: %v", targetNode.Name, err)
 		}
 
+		// 6. 验证authorized_keys文件内容
+		fmt.Printf("  6. 验证authorized_keys文件...\n")
+		verifyCmd := "echo '=== authorized_keys内容 ===' && wc -l ~/.ssh/authorized_keys && echo '=== 内容结束 ==='"
+		_, err = client.RunCommand(verifyCmd)
+		if err != nil {
+			client.Close()
+			return fmt.Errorf("failed to verify authorized_keys content for node %s: %v", targetNode.Name, err)
+		}
+
+		fmt.Printf("  ✓ 节点 %s 配置完成\n", targetNode.Name)
 		client.Close()
 	}
 
 	// 3. 测试节点之间的免密连接
+	fmt.Println("\n=== 3. 测试节点之间的免密连接 ===")
+	testSuccessCount := 0
+	testTotalCount := 0
+
 	for i, sourceNode := range allNodes {
 		for j, targetNode := range allNodes {
 			// 跳过自己
 			if i == j {
 				continue
 			}
+
+			testTotalCount++
+			fmt.Printf("\n测试从 %s 到 %s 的免密连接...\n", sourceNode.Name, targetNode.Name)
 
 			// 创建SSH客户端
 			sshConfig := ssh.SSHConfig{
@@ -429,18 +568,44 @@ func (m *FileNodeManager) ConfigureSSHPasswdless() error {
 
 			client, err := ssh.NewSSHClient(sshConfig)
 			if err != nil {
-				return fmt.Errorf("failed to create SSH client for node %s: %v", sourceNode.Name, err)
+				fmt.Printf("  ✗ 创建SSH客户端失败: %v\n", err)
+				continue
 			}
 
-			// 测试免密连接
-			testCmd := fmt.Sprintf("ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 %s@%s 'echo success'", targetNode.Username, targetNode.IP)
-			_, err = client.RunCommand(testCmd)
+			// 测试免密连接，使用简单的测试命令，使用节点名称而不是IP地址
+			testCmd := fmt.Sprintf(
+				"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 %s@%s 'echo success'",
+				targetNode.Username, targetNode.Name,
+			)
+
+			output, err := client.RunCommand(testCmd)
 			client.Close()
 
 			if err != nil {
-				return fmt.Errorf("SSH passwdless test failed from %s to %s: %v", sourceNode.Name, targetNode.Name, err)
+				fmt.Printf("  ✗ 免密连接测试失败\n")
+				fmt.Printf("    错误: %v\n", err)
+			} else {
+				if strings.TrimSpace(output) == "success" {
+					fmt.Printf("  ✓ 免密连接测试成功\n")
+					testSuccessCount++
+				} else {
+					fmt.Printf("  ✗ 免密连接测试失败，输出不符合预期: %s\n", output)
+				}
 			}
 		}
+	}
+
+	// 4. 输出测试结果
+	fmt.Println("\n=== 4. SSH免密互通配置结果 ===")
+	fmt.Printf("测试总数: %d\n", testTotalCount)
+	fmt.Printf("成功数量: %d\n", testSuccessCount)
+	fmt.Printf("失败数量: %d\n", testTotalCount-testSuccessCount)
+
+	if testSuccessCount == testTotalCount {
+		fmt.Println("\n✓ 所有节点之间的SSH免密互通配置成功！")
+	} else {
+		fmt.Printf("\n⚠️  部分节点之间的免密连接测试失败，成功率: %.2f%%\n", float64(testSuccessCount)/float64(testTotalCount)*100)
+		fmt.Println("建议检查失败节点的网络连接、SSH配置和公钥配置")
 	}
 
 	return nil

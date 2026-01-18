@@ -54,6 +54,7 @@ func NewSqliteNodeManager(dbPath string) (*SqliteNodeManager, error) {
 		node_type TEXT NOT NULL DEFAULT 'worker',
 		status TEXT NOT NULL DEFAULT 'offline',
 		os TEXT NOT NULL DEFAULT 'unknown',
+		join_command TEXT,
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
 	);
@@ -62,6 +63,13 @@ func NewSqliteNodeManager(dbPath string) (*SqliteNodeManager, error) {
 	_, err = db.Exec(createTableSQL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create nodes table: %v", err)
+	}
+
+	// 添加join_command列（如果不存在）
+	_, err = db.Exec("ALTER TABLE nodes ADD COLUMN IF NOT EXISTS join_command TEXT")
+	if err != nil {
+		// 忽略错误，因为列可能已经存在
+		fmt.Printf("Warning: failed to add join_command column: %v\n", err)
 	}
 
 	// 创建scripts表，用于存储部署流程脚本
@@ -96,7 +104,7 @@ func (m *SqliteNodeManager) GetNodes() ([]Node, error) {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
-	rows, err := m.db.Query("SELECT id, name, ip, port, username, password, private_key, node_type, status, os, created_at, updated_at FROM nodes")
+	rows, err := m.db.Query("SELECT id, name, ip, port, username, password, private_key, node_type, status, os, join_command, created_at, updated_at FROM nodes")
 	if err != nil {
 		return nil, fmt.Errorf("failed to query nodes: %v", err)
 	}
@@ -116,6 +124,7 @@ func (m *SqliteNodeManager) GetNodes() ([]Node, error) {
 			&node.NodeType,
 			&node.Status,
 			&node.OS,
+			&node.JoinCommand,
 			&node.CreatedAt,
 			&node.UpdatedAt,
 		); err != nil {
@@ -138,7 +147,7 @@ func (m *SqliteNodeManager) GetNode(id string) (*Node, error) {
 
 	var node Node
 	err := m.db.QueryRow(
-		"SELECT id, name, ip, port, username, password, private_key, node_type, status, os, created_at, updated_at FROM nodes WHERE id = ?",
+		"SELECT id, name, ip, port, username, password, private_key, node_type, status, os, join_command, created_at, updated_at FROM nodes WHERE id = ?",
 		id,
 	).Scan(
 		&node.ID,
@@ -151,6 +160,7 @@ func (m *SqliteNodeManager) GetNode(id string) (*Node, error) {
 		&node.NodeType,
 		&node.Status,
 		&node.OS,
+		&node.JoinCommand,
 		&node.CreatedAt,
 		&node.UpdatedAt,
 	)
@@ -201,7 +211,7 @@ func (m *SqliteNodeManager) CreateNode(node Node) (*Node, error) {
 
 	// 插入数据
 	_, err := m.db.Exec(
-		"INSERT INTO nodes (id, name, ip, port, username, password, private_key, node_type, status, os, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO nodes (id, name, ip, port, username, password, private_key, node_type, status, os, join_command, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		node.ID,
 		node.Name,
 		node.IP,
@@ -212,6 +222,7 @@ func (m *SqliteNodeManager) CreateNode(node Node) (*Node, error) {
 		node.NodeType,
 		node.Status,
 		node.OS,
+		node.JoinCommand,
 		node.CreatedAt,
 		node.UpdatedAt,
 	)
@@ -248,7 +259,7 @@ func (m *SqliteNodeManager) UpdateNode(id string, node Node) (*Node, error) {
 	}
 
 	_, err = m.db.Exec(
-		"UPDATE nodes SET name = ?, ip = ?, port = ?, username = ?, password = ?, private_key = ?, node_type = ?, status = ?, os = ?, updated_at = ? WHERE id = ?",
+		"UPDATE nodes SET name = ?, ip = ?, port = ?, username = ?, password = ?, private_key = ?, node_type = ?, status = ?, os = ?, join_command = ?, updated_at = ? WHERE id = ?",
 		node.Name,
 		node.IP,
 		node.Port,
@@ -258,6 +269,7 @@ func (m *SqliteNodeManager) UpdateNode(id string, node Node) (*Node, error) {
 		node.NodeType,
 		node.Status,
 		node.OS,
+		node.JoinCommand,
 		node.UpdatedAt,
 		node.ID,
 	)
@@ -311,9 +323,10 @@ func (m *SqliteNodeManager) TestConnection(id string) (bool, error) {
 		return false, err
 	}
 
-	// 创建SSH客户端
+	// 直接使用节点的IP地址进行连接，避免依赖本地hosts文件
+	// 从数据库中获取的节点信息已经包含了正确的IP地址
 	sshConfig := ssh.SSHConfig{
-		Host:       node.IP,
+		Host:       node.IP, // 直接使用IP地址，不依赖本地hosts文件
 		Port:       node.Port,
 		Username:   node.Username,
 		Password:   node.Password,
@@ -334,6 +347,7 @@ func (m *SqliteNodeManager) TestConnection(id string) (bool, error) {
 		m.mutex.Unlock()
 		return false, err
 	}
+	fmt.Printf("✓ SSH客户端创建成功\n")
 	defer client.Close()
 
 	// 执行简单命令测试连接
@@ -416,9 +430,9 @@ func (m *SqliteNodeManager) DeployNode(id string) error {
 		return err
 	}
 
-	// 执行部署逻辑
+	// 执行部署逻辑，使用节点名称连接
 	sshConfig := ssh.SSHConfig{
-		Host:       node.IP,
+		Host:       node.Name,
 		Port:       node.Port,
 		Username:   node.Username,
 		Password:   node.Password,
@@ -427,7 +441,12 @@ func (m *SqliteNodeManager) DeployNode(id string) error {
 
 	client, err := ssh.NewSSHClient(sshConfig)
 	if err != nil {
-		return err
+		// 如果使用节点名称连接失败，尝试使用IP地址连接
+		sshConfig.Host = node.IP
+		client, err = ssh.NewSSHClient(sshConfig)
+		if err != nil {
+			return err
+		}
 	}
 	defer client.Close()
 
@@ -470,9 +489,9 @@ func (m *SqliteNodeManager) ConfigureSSHSettings(id string) error {
 		return err
 	}
 
-	// 创建SSH客户端
+	// 直接使用节点的IP地址进行连接，避免依赖本地hosts文件
 	sshConfig := ssh.SSHConfig{
-		Host:       node.IP,
+		Host:       node.IP, // 直接使用IP地址，不依赖本地hosts文件
 		Port:       node.Port,
 		Username:   node.Username,
 		Password:   node.Password,
@@ -572,9 +591,9 @@ func (m *SqliteNodeManager) ConfigureSSHPasswdless() error {
 	fmt.Println("\n=== 1. 确保所有节点都已配置SSH密钥 ===")
 	for _, node := range allNodes {
 		fmt.Printf("处理节点: %s (%s)\n", node.Name, node.IP)
-		// 创建SSH客户端
+		// 直接使用节点的IP地址进行连接，避免依赖本地hosts文件
 		sshConfig := ssh.SSHConfig{
-			Host:       node.IP,
+			Host:       node.IP, // 直接使用IP地址，不依赖本地hosts文件
 			Port:       node.Port,
 			Username:   node.Username,
 			Password:   node.Password,
@@ -610,9 +629,9 @@ func (m *SqliteNodeManager) ConfigureSSHPasswdless() error {
 		fmt.Printf("获取节点 %s (%s) 的公钥...\n", node.Name, node.IP)
 		nodeIPMap[node.Name] = node.IP
 
-		// 创建SSH客户端
+		// 直接使用节点的IP地址进行连接，避免依赖本地hosts文件
 		sshConfig := ssh.SSHConfig{
-			Host:       node.IP,
+			Host:       node.IP, // 直接使用IP地址，不依赖本地hosts文件
 			Port:       node.Port,
 			Username:   node.Username,
 			Password:   node.Password,
@@ -635,13 +654,13 @@ func (m *SqliteNodeManager) ConfigureSSHPasswdless() error {
 		fmt.Printf("  成功获取节点 %s 的公钥\n", node.Name)
 	}
 
-	// 3. 配置每个节点的authorized_keys文件
-	fmt.Println("\n=== 3. 配置每个节点的authorized_keys文件 ===")
+	// 3. 配置每个节点的authorized_keys文件和hosts文件
+	fmt.Println("\n=== 3. 配置每个节点的authorized_keys文件和hosts文件 ===")
 	for _, targetNode := range allNodes {
 		fmt.Printf("\n配置节点: %s (%s)\n", targetNode.Name, targetNode.IP)
-		// 创建SSH客户端
+		// 直接使用节点的IP地址进行连接，避免依赖本地hosts文件
 		sshConfig := ssh.SSHConfig{
-			Host:       targetNode.IP,
+			Host:       targetNode.IP, // 直接使用IP地址，不依赖本地hosts文件
 			Port:       targetNode.Port,
 			Username:   targetNode.Username,
 			Password:   targetNode.Password,
@@ -662,16 +681,128 @@ func (m *SqliteNodeManager) ConfigureSSHPasswdless() error {
 			return fmt.Errorf("failed to set .ssh directory permissions for node %s: %v", targetNode.Name, err)
 		}
 
-		// 清空并重新创建authorized_keys文件
-		fmt.Printf("  2. 重新创建authorized_keys文件...\n")
+		// 2. 更新hosts文件，添加所有节点的名称和IP
+		fmt.Printf("  2. 更新hosts文件，添加所有节点的名称和IP...\n")
+		// 先备份原有hosts文件
+		_, err = client.RunCommand("sudo cp /etc/hosts /etc/hosts.bak")
+		if err != nil {
+			fmt.Printf("    警告: 无法备份hosts文件: %v\n", err)
+		}
+
+		// 构建hosts文件内容，保留原有内容，只添加新的节点条目
+		hostsContent := "# Kubernetes集群节点解析\n"
+		for nodeName, nodeIP := range nodeIPMap {
+			hostsContent += fmt.Sprintf("%s %s\n", nodeIP, nodeName)
+		}
+
+		// 显示构建的hosts文件内容，用于调试
+		fmt.Printf("  构建的hosts文件内容: %s\n", hostsContent)
+
+		// 写入临时文件，然后合并到/etc/hosts
+		tmpHostsFile := "/tmp/k8s_hosts"
+		// 使用printf命令写入临时文件，避免echo命令对特殊字符的处理问题
+		tmpCmd := fmt.Sprintf("printf '%%s' '%s' > %s", hostsContent, tmpHostsFile)
+		fmt.Printf("  执行命令: %s\n", tmpCmd)
+		_, err = client.RunCommand(tmpCmd)
+		if err != nil {
+			client.Close()
+			return fmt.Errorf("failed to write temporary hosts file for node %s: %v", targetNode.Name, err)
+		}
+
+		// 验证临时文件是否成功创建并包含内容
+		verifyCmd := fmt.Sprintf("ls -la %s && cat %s", tmpHostsFile, tmpHostsFile)
+		verifyOutput, err := client.RunCommand(verifyCmd)
+		if err != nil {
+			fmt.Printf("  验证临时hosts文件失败: %v\n", err)
+		} else {
+			fmt.Printf("  临时hosts文件验证结果: %s\n", verifyOutput)
+		}
+
+		// 合并到/etc/hosts，移除已存在的节点条目，添加新的
+		mergeCmd := `
+# 移除已存在的节点条目
+if grep -q "Kubernetes集群节点解析" /etc/hosts; then
+    # 移除从标记开始到文件结束的所有内容
+    sudo sed -i '/Kubernetes集群节点解析/,$d' /etc/hosts
+    if [ $? -eq 0 ]; then
+        echo "移除已存在的节点条目成功"
+    else
+        echo "移除已存在的节点条目失败"
+    fi
+fi
+
+# 添加新的节点条目
+echo "正在添加新的节点条目..."
+sudo bash -c 'cat /tmp/k8s_hosts >> /etc/hosts'
+if [ $? -eq 0 ]; then
+    echo "添加新的节点条目成功"
+else
+    echo "添加新的节点条目失败"
+fi
+
+# 清理临时文件
+rm -f /tmp/k8s_hosts
+if [ $? -eq 0 ]; then
+    echo "清理临时文件成功"
+else
+    echo "清理临时文件失败"
+fi
+
+# 刷新DNS缓存，使hosts文件生效
+if command -v systemctl &> /dev/null; then
+    # 对于使用systemd的系统，重启nscd服务（如果存在）
+    if systemctl list-units --type=service | grep -q nscd; then
+        echo "重启nscd服务，刷新DNS缓存..."
+        sudo systemctl restart nscd
+    fi
+    # 重启systemd-resolved服务（如果存在）
+    if systemctl list-units --type=service | grep -q systemd-resolved; then
+        echo "重启systemd-resolved服务，刷新DNS缓存..."
+        sudo systemctl restart systemd-resolved
+    fi
+else
+    # 对于其他系统，使用nscd命令（如果存在）
+    if command -v nscd &> /dev/null; then
+        echo "刷新nscd缓存..."
+        sudo nscd -i hosts
+    fi
+fi
+
+# 验证主机名解析是否生效
+echo "验证主机名解析..."
+for host in $(cat /etc/hosts | grep -v '^#' | grep -v '^$' | awk '{print $2}'); do
+    if [ "$host" != "localhost" ] && [ "$host" != "localhost.localdomain" ]; then
+        echo "测试解析主机名: $host"
+        ping -c 1 $host > /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            echo "✓ 主机名 $host 解析成功"
+        else
+            echo "✗ 主机名 $host 解析失败"
+        fi
+    fi
+done
+
+# 显示更新后的hosts文件内容
+echo "=== 更新后的hosts文件内容 ==="
+sudo tail -20 /etc/hosts
+echo "=== 内容结束 ==="
+`
+		_, err = client.RunCommandWithOutput(mergeCmd, outputCallback)
+		if err != nil {
+			client.Close()
+			return fmt.Errorf("failed to update hosts file for node %s: %v", targetNode.Name, err)
+		}
+
+		// 3. 清空并重新创建authorized_keys文件
+		fmt.Printf("  3. 重新创建authorized_keys文件...\n")
 		_, err = client.RunCommandWithOutput("rm -f ~/.ssh/authorized_keys && touch ~/.ssh/authorized_keys", outputCallback)
 		if err != nil {
 			client.Close()
 			return fmt.Errorf("failed to recreate authorized_keys for node %s: %v", targetNode.Name, err)
 		}
 
-		// 添加所有节点的公钥到authorized_keys文件
-		fmt.Printf("  3. 添加所有节点的公钥...\n")
+		// 4. 添加所有节点的公钥到authorized_keys文件
+		fmt.Printf("  4. 添加所有节点的公钥...\n")
 		for nodeName, publicKey := range nodePublicKeys {
 			fmt.Printf("    添加节点 %s 的公钥...\n", nodeName)
 			// 使用echo命令添加公钥，确保格式正确
@@ -683,17 +814,17 @@ func (m *SqliteNodeManager) ConfigureSSHPasswdless() error {
 			}
 		}
 
-		// 设置authorized_keys文件权限
-		fmt.Printf("  4. 设置authorized_keys文件权限...\n")
+		// 5. 设置authorized_keys文件权限
+		fmt.Printf("  5. 设置authorized_keys文件权限...\n")
 		_, err = client.RunCommandWithOutput("chmod 600 ~/.ssh/authorized_keys", outputCallback)
 		if err != nil {
 			client.Close()
 			return fmt.Errorf("failed to set authorized_keys permissions for node %s: %v", targetNode.Name, err)
 		}
 
-		// 验证authorized_keys文件内容
-		fmt.Printf("  5. 验证authorized_keys文件...\n")
-		verifyCmd := "echo '=== authorized_keys内容 ===' && wc -l ~/.ssh/authorized_keys && echo '=== 内容结束 ==='"
+		// 6. 验证authorized_keys文件内容
+		fmt.Printf("  6. 验证authorized_keys文件...\n")
+		verifyCmd = "echo '=== authorized_keys内容 ===' && wc -l ~/.ssh/authorized_keys && echo '=== 内容结束 ==='"
 		_, err = client.RunCommandWithOutput(verifyCmd, outputCallback)
 		if err != nil {
 			client.Close()
@@ -719,9 +850,9 @@ func (m *SqliteNodeManager) ConfigureSSHPasswdless() error {
 			testTotalCount++
 			fmt.Printf("\n测试从 %s 到 %s 的免密连接...\n", sourceNode.Name, targetNode.Name)
 
-			// 创建SSH客户端
+			// 直接使用节点的IP地址进行连接，避免依赖本地hosts文件
 			sshConfig := ssh.SSHConfig{
-				Host:       sourceNode.IP,
+				Host:       sourceNode.IP, // 直接使用IP地址，不依赖本地hosts文件
 				Port:       sourceNode.Port,
 				Username:   sourceNode.Username,
 				Password:   sourceNode.Password,
@@ -734,10 +865,10 @@ func (m *SqliteNodeManager) ConfigureSSHPasswdless() error {
 				continue
 			}
 
-			// 测试免密连接，使用简单的测试命令
+			// 测试免密连接，使用简单的测试命令，使用节点名称而不是IP地址
 			testCmd := fmt.Sprintf(
 				"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 %s@%s 'echo success'",
-				targetNode.Username, targetNode.IP,
+				targetNode.Username, targetNode.Name,
 			)
 
 			output, err := client.RunCommand(testCmd)
@@ -1859,9 +1990,9 @@ func (m *SqliteNodeManager) InstallKubernetesComponents(id string, kubeadmVersio
 		return err
 	}
 
-	// 执行安装逻辑
+	// 执行安装逻辑，首先尝试使用节点名称连接
 	sshConfig := ssh.SSHConfig{
-		Host:       node.IP,
+		Host:       node.Name,
 		Port:       node.Port,
 		Username:   node.Username,
 		Password:   node.Password,
@@ -1870,7 +2001,12 @@ func (m *SqliteNodeManager) InstallKubernetesComponents(id string, kubeadmVersio
 
 	client, err := ssh.NewSSHClient(sshConfig)
 	if err != nil {
-		return err
+		// 如果使用节点名称连接失败，尝试使用IP地址连接
+		sshConfig.Host = node.IP
+		client, err = ssh.NewSSHClient(sshConfig)
+		if err != nil {
+			return err
+		}
 	}
 	defer client.Close()
 

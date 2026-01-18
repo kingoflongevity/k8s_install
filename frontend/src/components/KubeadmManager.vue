@@ -205,65 +205,52 @@
           </div>
         </div>
         
-        <!-- 步骤跳过配置 -->
-        <div class="skip-steps-config">
-          <h3>部署步骤配置</h3>
-          <div class="skip-steps-description">
-            默认所有步骤都会执行，勾选表示跳过该步骤
-          </div>
-          <div class="skip-steps-list">
-            <div class="skip-step-item" v-for="step in deploySteps" :key="step.id">
-              <label class="checkbox-label">
-                <input type="checkbox" v-model="skipSteps[step.id]">
-                跳过 {{ step.name }}
-              </label>
-              <div class="step-description">{{ step.description }}</div>
+        <!-- 高级部署配置 -->
+        <div class="advanced-deploy-config">
+          <h3 @click="toggleAdvancedDeployConfig" class="advanced-toggle">
+            高级部署配置
+            <span class="toggle-icon">{{ showAdvancedDeployConfig ? '▼' : '▶' }}</span>
+          </h3>
+          <div v-if="showAdvancedDeployConfig" class="skip-steps-config">
+            <div class="skip-steps-description">
+              默认所有步骤都会执行，勾选表示跳过该步骤
+            </div>
+            <div class="skip-steps-list">
+              <div class="skip-step-item" v-for="step in deploySteps" :key="step.id">
+                <label class="checkbox-label">
+                  <input type="checkbox" v-model="skipSteps[step.id]">
+                  跳过 {{ step.name }}
+                </label>
+                <div class="step-description">{{ step.description }}</div>
+              </div>
             </div>
           </div>
         </div>
         
-        <!-- 调试信息：显示当前状态 -->
-        <div class="debug-info" v-if="currentStep === 1">
-          <h4>调试信息</h4>
-          <div class="debug-item">
-            <span class="debug-label">是否可以进入下一步:</span>
-            <span class="debug-value" :class="canProceedToNextStep() ? 'success' : 'error'">
-              {{ canProceedToNextStep() ? '是' : '否' }}
-            </span>
-          </div>
-          <div class="debug-item">
-            <span class="debug-label">KubeVersion已选择:</span>
-            <span class="debug-value" :class="deployConfig.kubeVersion ? 'success' : 'error'">
-              {{ deployConfig.kubeVersion ? deployConfig.kubeVersion : '否' }}
-            </span>
-          </div>
-          <div class="debug-item">
-            <span class="debug-label">PodNetwork已选择:</span>
-            <span class="debug-value" :class="deployConfig.podNetwork ? 'success' : 'error'">
-              {{ deployConfig.podNetwork ? deployConfig.podNetwork : '否' }}
-            </span>
-          </div>
-          <div class="debug-item">
-            <span class="debug-label">ContainerRuntime已选择:</span>
-            <span class="debug-value" :class="deployConfig.containerRuntime ? 'success' : 'error'">
-              {{ deployConfig.containerRuntime ? deployConfig.containerRuntime : '否' }}
-            </span>
-          </div>
-        </div>
-        
+        <!-- 节点配置预览 -->
         <div class="node-configuration-summary">
           <h3>节点配置预览</h3>
           <div class="summary-grid">
             <div class="summary-section">
-              <h5>主节点配置</h5>
-              <div v-for="node in masterNodes" :key="node.id" class="preview-node">
-                {{ node.name }} ({{ node.ip }}) - {{ node.containerRuntime }}
+              <h5>主节点 ({{ masterNodes.length }}个)</h5>
+              <div v-if="masterNodes.length > 0" class="preview-node-list">
+                <div v-for="node in masterNodes" :key="node.id" class="preview-node">
+                  {{ node.name }} ({{ node.ip }})
+                </div>
+              </div>
+              <div v-else class="preview-empty">
+                未选择主节点
               </div>
             </div>
             <div class="summary-section">
-              <h5>工作节点配置</h5>
-              <div v-for="node in workerNodes" :key="node.id" class="preview-node">
-                {{ node.name }} ({{ node.ip }}) - {{ node.containerRuntime }}
+              <h5>工作节点 ({{ workerNodes.length }}个)</h5>
+              <div v-if="workerNodes.length > 0" class="preview-node-list">
+                <div v-for="node in workerNodes" :key="node.id" class="preview-node">
+                  {{ node.name }} ({{ node.ip }})
+                </div>
+              </div>
+              <div v-else class="preview-empty">
+                未选择工作节点
               </div>
             </div>
           </div>
@@ -403,17 +390,22 @@
                 
                 <!-- 手动输入Join Token -->
                 <div class="manual-token-input">
-                  <h5>手动输入Join Token</h5>
-                  <textarea 
-                    v-model="manualJoinToken" 
-                    placeholder="请输入完整的join命令，例如：kubeadm join 192.168.31.206:6443 --token xxxxxx.xxxxxxxxxxxxxxxx --discovery-token-ca-cert-hash sha256:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                    rows="3"
-                  ></textarea>
-                  <button class="btn btn-secondary" @click="useManualJoinToken">
-                    <span class="btn-icon">🔧</span>
-                    使用此Token
-                  </button>
-                  <p class="hint">如果自动提取失败，可以在此手动输入join命令</p>
+                  <h5 @click="toggleManualTokenInput" class="advanced-toggle">
+                    手动输入Join Token
+                    <span class="toggle-icon">{{ showManualTokenInput ? '▼' : '▶' }}</span>
+                  </h5>
+                  <div v-if="showManualTokenInput">
+                    <textarea 
+                      v-model="manualJoinToken" 
+                      placeholder="请输入完整的join命令，例如：kubeadm join 192.168.31.206:6443 --token xxxxxx.xxxxxxxxxxxxxxxx --discovery-token-ca-cert-hash sha256:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                      rows="3"
+                    ></textarea>
+                    <button class="btn btn-secondary" @click="useManualJoinToken">
+                      <span class="btn-icon">🔧</span>
+                      使用此Token
+                    </button>
+                    <p class="hint">如果自动提取失败，可以在此手动输入join命令</p>
+                  </div>
                 </div>
               </div>
             </div>
@@ -421,10 +413,13 @@
             <!-- 工作节点步骤选择卡片 -->
             <div class="card worker-steps-card">
               <div class="card-header">
-                <h4>工作节点部署步骤</h4>
+                <h4 @click="toggleWorkerStepsConfig" class="advanced-toggle card-title-toggle">
+                  工作节点部署步骤
+                  <span class="toggle-icon">{{ showWorkerStepsConfig ? '▼' : '▶' }}</span>
+                </h4>
                 <span class="badge info">可选择</span>
               </div>
-              <div class="card-body">
+              <div class="card-body" v-if="showWorkerStepsConfig">
                 <div class="steps-selection-description">
                   <p>选择要执行的工作节点部署步骤，默认执行所有步骤</p>
                 </div>
@@ -763,7 +758,7 @@ const getApiBaseUrl = () => {
 
 const apiClient = axios.create({
   baseURL: getApiBaseUrl(),
-  timeout: 600000, // 10分钟超时，适应Kubernetes组件安装的耗时过程
+  timeout: 1800000, // 30分钟超时，适应Kubernetes组件安装的耗时过程
   headers: {
     'Content-Type': 'application/json'
   }
@@ -963,14 +958,46 @@ const handleSSEMessage = (message) => {
         }
       }
       
-      // 原来的部署完成处理逻辑保留，但只处理失败情况
+      // 处理部署完成的情况
       if ((message.Operation === 'DeployK8sCluster' || message.Operation === 'InitMaster') && 
-          message.Status === 'failed') {
+          message.Status === 'success') {
+        // 部署成功，更新状态
+        isDeploying.value = false
+        
+        // 检查是否有工作节点需要部署
+        const hasWorkerNodes = Object.keys(selectedNodes.value).some(nodeId => selectedNodes.value[nodeId] === 'worker')
+        
+        // 如果部署的是主节点，且没有工作节点，直接进入完成步骤
+        if ((message.Operation === 'InitMaster' || message.Operation === 'DeployK8sCluster') && !hasWorkerNodes) {
+          currentStep.value = 4
+          steps.value[2].status = 'completed'
+          steps.value[3].status = 'completed'
+        } else if (message.Operation === 'DeployK8sCluster') {
+          // 如果是完整集群部署，直接进入完成步骤
+          currentStep.value = 4
+          steps.value[3].status = 'completed'
+        }
+      } else if ((message.Operation === 'DeployK8sCluster' || message.Operation === 'InitMaster') && 
+                 message.Status === 'failed') {
         // 如果部署失败，且还没有提取到join命令，才更新状态为失败
         if (!joinToken.value) {
           // 无论部署结果如何，都先将isDeploying设置为false
           isDeploying.value = false
           steps.value[2].status = 'failed'
+        }
+      }
+      
+      // 检查日志内容中是否包含部署完成的关键字
+      if (message.Output && (message.Output.includes('=== Kubernetes集群部署完成 ===') || 
+          message.Output.includes('Worker节点加入集群成功') || 
+          message.Output.includes('Kubernetes集群部署完成'))) {
+        // 部署完成，更新UI状态
+        isDeploying.value = false
+        
+        // 检查当前步骤，如果是在工作节点部署步骤，自动进入完成步骤
+        if (currentStep.value === 3) {
+          currentStep.value = 4
+          steps.value[3].status = 'completed'
         }
       }
     } else {
@@ -1083,6 +1110,18 @@ const deploymentTimestamps = ref({
   worker: {}
 })
 
+// 高级部署配置显示控制
+const showAdvancedDeployConfig = ref(false)
+const toggleAdvancedDeployConfig = () => {
+  showAdvancedDeployConfig.value = !showAdvancedDeployConfig.value
+}
+
+// 工作节点部署步骤配置显示控制
+const showWorkerStepsConfig = ref(false)
+const toggleWorkerStepsConfig = () => {
+  showWorkerStepsConfig.value = !showWorkerStepsConfig.value
+}
+
 // 工作节点部署步骤跟踪
 const workerDeploymentStep = ref(0)
 
@@ -1117,6 +1156,11 @@ const logsContainer = ref(null)
 const joinToken = ref('')
 // 手动输入的join token
 const manualJoinToken = ref('')
+// 手动输入Join Token显示控制
+const showManualTokenInput = ref(false)
+const toggleManualTokenInput = () => {
+  showManualTokenInput.value = !showManualTokenInput.value
+}
 
 // 集群信息
 const clusterInfo = ref({
@@ -1471,7 +1515,7 @@ const deployMasterNodes = async () => {
     const masterNode = masterNodes.value[0]
     
     // 调用后端API初始化主节点
-    await apiClient.post('/kubeadm/init', {
+    const response = await apiClient.post('/kubeadm/init', {
       masterNodeId: masterNode.id,
       config: {
         apiVersion: "kubeadm.k8s.io/v1beta3",
@@ -1498,9 +1542,39 @@ const deployMasterNodes = async () => {
     deployLogs.value += `主节点部署请求已发送，正在等待部署结果...\n`
     deployLogs.value += `初始化主节点的脚本正在执行中，完成后会自动进入下一步...\n`
     
-    // API调用成功，立即将isDeploying设置为false
-    // 因为后续的部署状态更新将通过SSE消息处理
-    isDeploying.value = false
+    // 处理API响应中的joinCommand字段
+    if (response.data && response.data.joinCommand) {
+      const apiJoinCommand = response.data.joinCommand
+      deployLogs.value += `[${new Date().toLocaleString()}] 从API响应中获取到join命令: ${apiJoinCommand}\n\n`
+      
+      // 保存join命令到本地存储和状态
+      joinToken.value = apiJoinCommand
+      localStorage.setItem('kubeadmJoinCommand', apiJoinCommand)
+      sessionStorage.setItem('kubeadmJoinCommand', apiJoinCommand)
+      
+      // 保存token有效期信息，默认24小时
+      const tokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+      localStorage.setItem('kubeadmJoinTokenExpiry', tokenExpiry)
+      sessionStorage.setItem('kubeadmJoinTokenExpiry', tokenExpiry)
+      
+      // 更新部署状态
+      isDeploying.value = false
+      steps.value[2].status = 'completed'
+      
+      // 自动进入下一步
+      const workerNodeIds = Object.keys(selectedNodes.value).filter(nodeId => selectedNodes.value[nodeId] === 'worker')
+      if (workerNodeIds.length > 0 && currentStep.value === 2) {
+        deployLogs.value += `[${new Date().toLocaleString()}] 从API获取到join命令，自动进入工作节点部署步骤\n\n`
+        currentStep.value = 3
+        deployLogs.value += `[${new Date().toLocaleString()}] 自动开始部署工作节点...\n\n`
+        deployWorkerNodes()
+      } else if (workerNodeIds.length === 0 && currentStep.value === 2) {
+        deployLogs.value += `[${new Date().toLocaleString()}] 从API获取到join命令，没有工作节点需要部署，直接进入完成步骤\n\n`
+        currentStep.value = 4
+      }
+    }
+    
+    // API调用成功，isDeploying状态已在前面根据joinCommand处理结果设置
     
     // 删除了120秒超时提示，改为自动检测join token并推进流程
   } catch (error) {
@@ -1614,9 +1688,8 @@ const startWorkerDeployment = async () => {
     
     deployLogs.value += `[${new Date().toLocaleString()}] 工作节点部署请求已发送，正在等待部署结果...\n`
     
-    // API调用成功，立即将isDeploying设置为false
-    // 因为后续的部署状态更新将通过SSE消息处理
-    isDeploying.value = false
+    // 保持isDeploying为true，直到收到部署完成的SSE消息
+    // 这样可以更准确地反映实际部署状态
     
     // 更新部署步骤到配置工作节点
     workerDeploymentStep.value = 1
@@ -1819,6 +1892,39 @@ const copyJoinToken = async () => {
   }
 }
 
+// 刷新join命令
+const refreshJoinToken = async () => {
+  deployLogs.value += `[${new Date().toLocaleString()}] 开始刷新join命令...\n`
+  
+  try {
+    // 调用后端API获取join命令
+    const response = await apiClient.get('/kubeadm/join-command')
+    
+    if (response.data && response.data.command) {
+      const freshJoinCommand = response.data.command
+      deployLogs.value += `[${new Date().toLocaleString()}] 成功获取最新join命令: ${freshJoinCommand}\n\n`
+      
+      // 更新本地存储和状态
+      joinToken.value = freshJoinCommand
+      localStorage.setItem('kubeadmJoinCommand', freshJoinCommand)
+      sessionStorage.setItem('kubeadmJoinCommand', freshJoinCommand)
+      
+      // 保存token有效期信息，默认24小时
+      const tokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+      localStorage.setItem('kubeadmJoinTokenExpiry', tokenExpiry)
+      sessionStorage.setItem('kubeadmJoinTokenExpiry', tokenExpiry)
+      
+      emit('showMessage', { text: 'join命令刷新成功', type: 'success' })
+    } else {
+      deployLogs.value += `[${new Date().toLocaleString()}] 获取join命令失败: 响应格式不正确\n\n`
+      emit('showMessage', { text: '获取join命令失败: 响应格式不正确', type: 'error' })
+    }
+  } catch (error) {
+    deployLogs.value += `[${new Date().toLocaleString()}] 获取join命令失败: ${error.response?.data?.error || error.message}\n\n`
+    emit('showMessage', { text: '获取join命令失败: ' + (error.response?.data?.error || error.message), type: 'error' })
+  }
+}
+
 // 使用手动输入的Join Token
 const useManualJoinToken = () => {
   if (manualJoinToken.value) {
@@ -1837,21 +1943,7 @@ const useManualJoinToken = () => {
   }
 }
 
-// 刷新Join Token
-const refreshJoinToken = async () => {
-  try {
-    deployLogs.value += `[${new Date().toLocaleString()}] 正在刷新Join Token...\n`
-    // 这里可以添加调用后端API刷新Join Token的逻辑
-    // 目前我们只是模拟刷新过程
-    setTimeout(() => {
-      deployLogs.value += `[${new Date().toLocaleString()}] Join Token刷新功能尚未实现，可手动从主节点获取新的token\n\n`
-      emit('showMessage', { text: 'Join Token刷新功能尚未实现', type: 'info' })
-    }, 1000)
-  } catch (error) {
-    deployLogs.value += `[${new Date().toLocaleString()}] 刷新Join Token失败: ${error.message}\n\n`
-    emit('showMessage', { text: '刷新Join Token失败!', type: 'error' })
-  }
-}
+// 刷新Join Token函数已在上方实现
 
 // 重试节点部署
 const retryNodeDeployment = async (nodeId) => {
@@ -3023,11 +3115,70 @@ const getDeploymentStatusText = (status) => {
 .node-type-btn:hover {
   background-color: var(--border-color);
 }
-
+/* 节点类型选择按钮 */
 .node-type-btn.active {
   background-color: var(--primary-color);
   color: white;
   border-color: var(--primary-color);
+}
+
+/* 高级配置切换样式 */
+.advanced-toggle {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.3s ease;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 15px 0;
+  padding-bottom: 8px;
+  border-bottom: 2px solid var(--primary-color);
+  display: inline-block;
+}
+
+.advanced-toggle:hover {
+  color: var(--primary-light);
+}
+
+.toggle-icon {
+  font-size: 0.8rem;
+  transition: transform 0.3s ease;
+}
+
+.advanced-deploy-config {
+  margin-top: 20px;
+}
+
+.advanced-deploy-config .skip-steps-config {
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px dashed var(--border-color);
+}
+
+/* 卡片标题折叠样式 */
+.card-title-toggle {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.3s ease;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 /* 已选择节点摘要 */

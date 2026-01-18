@@ -110,7 +110,7 @@ func main() {
 			return
 		}
 
-		// 创建SSH配置
+		// 创建SSH配置，首先使用IP地址连接（确保在任何hosts文件更新之前都能连接）
 		sshConfig := kubeadm.SSHConfig{
 			Host:       masterNode.IP,
 			Port:       masterNode.Port,
@@ -356,9 +356,8 @@ func main() {
 
 	r.POST("/kubeadm/init", func(c *gin.Context) {
 		var req struct {
-			MasterNodeID string                `json:"masterNodeId" binding:"required"`
-			Config       kubeadm.KubeadmConfig `json:"config" binding:"required"`
-			SkipSteps    []string              `json:"skipSteps" binding:"omitempty"`
+			Config    kubeadm.KubeadmConfig `json:"config" binding:"required"`
+			SkipSteps []string              `json:"skipSteps" binding:"omitempty"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -367,16 +366,141 @@ func main() {
 			return
 		}
 
-		// 获取master节点信息
-		masterNode, err := nodeManager.GetNode(req.MasterNodeID)
+		// 获取所有节点，然后选择第一个主节点
+		allNodes, err := nodeManager.GetNodes()
 		if err != nil {
+			errorLog := fmt.Sprintf("调试信息: 获取所有节点失败: %v", err)
+			fmt.Println(errorLog)
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": fmt.Sprintf("failed to get master node: %v", err),
+				"error": fmt.Sprintf("failed to get nodes: %v", err),
 			})
 			return
 		}
 
-		// 创建SSH配置
+		// 过滤出主节点
+		var masterNode *node.Node
+		for _, n := range allNodes {
+			if n.NodeType == "master" || n.NodeType == "Master" {
+				masterNode = &n
+				break
+			}
+		}
+
+		if masterNode == nil {
+			errorLog := "调试信息: 没有找到主节点，请先添加主节点并设置为主节点类型"
+			fmt.Println(errorLog)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "no master node found",
+			})
+			return
+		}
+
+		// 记录找到的主节点信息
+		debugLog := fmt.Sprintf("调试信息: 成功找到主节点: ID=%s, Name=%s, IP=%s", masterNode.ID, masterNode.Name, masterNode.IP)
+		fmt.Println(debugLog)
+
+		// 添加详细的节点信息调试
+		nodeInfoLog := fmt.Sprintf("调试信息: 成功获取节点信息:\nID: %s\nName: %s\nIP: '%s' (长度: %d)\nPort: %d\nUsername: '%s'\nPassword: %s\nPrivateKey: %s\nNodeType: %s\nStatus: %s\nOS: %s",
+			masterNode.ID, masterNode.Name, masterNode.IP, len(masterNode.IP),
+			masterNode.Port, masterNode.Username, maskPassword(masterNode.Password),
+			maskPrivateKey(masterNode.PrivateKey), masterNode.NodeType, masterNode.Status, masterNode.OS)
+		fmt.Println(nodeInfoLog)
+		// 记录节点信息日志
+		nodeManager.CreateLog(log.LogEntry{
+			ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
+			NodeID:    masterNode.ID,
+			NodeName:  masterNode.Name,
+			Operation: "Debug",
+			Command:   "节点信息",
+			Output:    nodeInfoLog,
+			Status:    "success",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		})
+
+		// 验证节点信息是否完整
+		if masterNode.IP == "" {
+			errorLog := "错误: 节点IP地址为空"
+			fmt.Println(errorLog)
+			// 记录错误日志
+			nodeManager.CreateLog(log.LogEntry{
+				ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
+				NodeID:    masterNode.ID,
+				NodeName:  masterNode.Name,
+				Operation: "Debug",
+				Command:   "验证节点信息",
+				Output:    errorLog,
+				Status:    "failed",
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			})
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "master node IP address is empty",
+			})
+			return
+		}
+
+		if masterNode.Port == 0 {
+			warningLog := "警告: 节点端口为0，设置为默认值22"
+			fmt.Println(warningLog)
+			// 记录警告日志
+			nodeManager.CreateLog(log.LogEntry{
+				ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
+				NodeID:    masterNode.ID,
+				NodeName:  masterNode.Name,
+				Operation: "Debug",
+				Command:   "验证节点信息",
+				Output:    warningLog,
+				Status:    "warning",
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			})
+			masterNode.Port = 22
+		}
+
+		if masterNode.Username == "" {
+			errorLog := "错误: 节点用户名为空"
+			fmt.Println(errorLog)
+			// 记录错误日志
+			nodeManager.CreateLog(log.LogEntry{
+				ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
+				NodeID:    masterNode.ID,
+				NodeName:  masterNode.Name,
+				Operation: "Debug",
+				Command:   "验证节点信息",
+				Output:    errorLog,
+				Status:    "failed",
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			})
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "master node username is empty",
+			})
+			return
+		}
+
+		if masterNode.Password == "" && masterNode.PrivateKey == "" {
+			errorLog := "错误: 节点既没有密码也没有私钥"
+			fmt.Println(errorLog)
+			// 记录错误日志
+			nodeManager.CreateLog(log.LogEntry{
+				ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
+				NodeID:    masterNode.ID,
+				NodeName:  masterNode.Name,
+				Operation: "Debug",
+				Command:   "验证节点信息",
+				Output:    errorLog,
+				Status:    "failed",
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			})
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "master node has neither password nor private key",
+			})
+			return
+		}
+
+		// 创建SSH配置，首先使用IP地址连接（确保在任何hosts文件更新之前都能连接）
 		sshConfig := kubeadm.SSHConfig{
 			Host:       masterNode.IP,
 			Port:       masterNode.Port,
@@ -385,13 +509,23 @@ func main() {
 			PrivateKey: masterNode.PrivateKey,
 		}
 
-		// 添加调试信息，查看节点的SSH认证信息
-		fmt.Printf("调试信息: 节点 %s 的SSH配置:\n", masterNode.Name)
-		fmt.Printf("  Host: %s\n", masterNode.IP)
-		fmt.Printf("  Port: %d\n", masterNode.Port)
-		fmt.Printf("  Username: %s\n", masterNode.Username)
-		fmt.Printf("  Password: %s\n", maskPassword(masterNode.Password))
-		fmt.Printf("  PrivateKey: %s\n", maskPrivateKey(masterNode.PrivateKey))
+		// 添加SSH配置调试信息
+		sshConfigLog := fmt.Sprintf("调试信息: 最终的SSH配置:\nHost: %s\nPort: %d\nUsername: %s\nPassword: %s\nPrivateKey: %s",
+			sshConfig.Host, sshConfig.Port, sshConfig.Username,
+			maskPassword(sshConfig.Password), maskPrivateKey(sshConfig.PrivateKey))
+		fmt.Println(sshConfigLog)
+		// 记录SSH配置日志
+		nodeManager.CreateLog(log.LogEntry{
+			ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
+			NodeID:    masterNode.ID,
+			NodeName:  masterNode.Name,
+			Operation: "Debug",
+			Command:   "SSH配置",
+			Output:    sshConfigLog,
+			Status:    "success",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		})
 
 		// 记录初始化开始日志
 		initLog := log.LogEntry{
@@ -408,7 +542,7 @@ func main() {
 		nodeManager.CreateLog(initLog)
 
 		fmt.Printf("开始初始化master节点: %s\n", masterNode.Name)
-		fmt.Printf("跳过的步骤: %v\n", req.SkipSteps)
+		fmt.Printf("跳过的步骤: %s\n", strings.Join(req.SkipSteps, ", "))
 
 		result, err := kubeadm.InitMaster(sshConfig, req.Config, req.SkipSteps)
 		if err != nil {
@@ -433,8 +567,73 @@ func main() {
 
 		fmt.Printf("初始化master节点成功: %s\n输出: %s\n", masterNode.Name, result)
 
+		// 从输出中提取join命令并存储到数据库中
+		var joinCommand string
+		lines := strings.Split(result, "\n")
+		for i, line := range lines {
+			if strings.HasPrefix(line, "kubeadm join") {
+				// 开始构建join命令，处理多行情况
+				var fullCommand []string
+				j := i
+				for j < len(lines) {
+					currentLine := strings.TrimSpace(lines[j])
+					// 检查是否以反斜杠结尾（表示命令换行）
+					if strings.HasSuffix(currentLine, "\\") {
+						// 移除反斜杠并添加到命令中
+						fullCommand = append(fullCommand, strings.TrimSuffix(currentLine, "\\"))
+						j++
+					} else {
+						// 这是命令的最后一行，添加到命令中并停止
+						fullCommand = append(fullCommand, currentLine)
+						break
+					}
+				}
+				// 合并所有行到一个完整的命令中
+				joinCommand = strings.TrimSpace(strings.Join(fullCommand, " "))
+				break
+			}
+		}
+
+		// 如果提取到join命令，将其存储到数据库中
+		if joinCommand != "" {
+			fmt.Printf("提取到join命令: %s\n", joinCommand)
+			// 更新master节点的JoinCommand字段
+			masterNode.JoinCommand = joinCommand
+			_, err := nodeManager.UpdateNode(masterNode.ID, *masterNode)
+			if err != nil {
+				fmt.Printf("存储join命令到数据库失败: %v\n", err)
+			} else {
+				fmt.Println("join命令存储到数据库成功")
+			}
+		} else {
+			fmt.Println("未从输出中提取到join命令")
+			// 尝试直接获取join命令
+			sshConfig := kubeadm.SSHConfig{
+				Host:       masterNode.IP,
+				Port:       masterNode.Port,
+				Username:   masterNode.Username,
+				Password:   masterNode.Password,
+				PrivateKey: masterNode.PrivateKey,
+			}
+			joinCommand, err := kubeadm.GetJoinCommand(sshConfig)
+			if err == nil && joinCommand != "" {
+				fmt.Printf("直接获取到join命令: %s\n", joinCommand)
+				// 更新master节点的JoinCommand字段
+				masterNode.JoinCommand = joinCommand
+				_, err := nodeManager.UpdateNode(masterNode.ID, *masterNode)
+				if err != nil {
+					fmt.Printf("存储join命令到数据库失败: %v\n", err)
+				} else {
+					fmt.Println("join命令存储到数据库成功")
+				}
+			} else {
+				fmt.Printf("直接获取join命令失败: %v\n", err)
+			}
+		}
+
 		c.JSON(http.StatusOK, gin.H{
-			"result": result,
+			"result":      result,
+			"joinCommand": joinCommand,
 		})
 	})
 
@@ -460,7 +659,7 @@ func main() {
 			return
 		}
 
-		// 创建SSH配置
+		// 创建SSH配置，首先使用IP地址连接（确保在任何hosts文件更新之前都能连接）
 		sshConfig := kubeadm.SSHConfig{
 			Host:       masterNode.IP,
 			Port:       masterNode.Port,
@@ -514,24 +713,41 @@ func main() {
 	})
 
 	r.GET("/kubeadm/join-command", func(c *gin.Context) {
-		masterNodeID := c.Query("masterNodeId")
-		if masterNodeID == "" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "masterNodeId is required",
-			})
-			return
-		}
-
-		// 获取master节点信息
-		masterNode, err := nodeManager.GetNode(masterNodeID)
+		// 获取所有节点，然后选择第一个主节点
+		allNodes, err := nodeManager.GetNodes()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": fmt.Sprintf("failed to get master node: %v", err),
+				"error": fmt.Sprintf("failed to get nodes: %v", err),
 			})
 			return
 		}
 
-		// 创建SSH配置
+		// 过滤出主节点
+		var masterNode *node.Node
+		for _, n := range allNodes {
+			if n.NodeType == "master" || n.NodeType == "Master" {
+				masterNode = &n
+				break
+			}
+		}
+
+		if masterNode == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "no master node found",
+			})
+			return
+		}
+
+		// 首先尝试从节点的JoinCommand字段中获取join命令
+		if masterNode.JoinCommand != "" {
+			c.JSON(http.StatusOK, gin.H{
+				"command": masterNode.JoinCommand,
+			})
+			return
+		}
+
+		// 如果JoinCommand字段为空，则通过SSH连接到master节点获取join命令
+		// 创建SSH配置，首先使用IP地址连接（确保在任何hosts文件更新之前都能连接）
 		sshConfig := kubeadm.SSHConfig{
 			Host:       masterNode.IP,
 			Port:       masterNode.Port,
@@ -547,6 +763,15 @@ func main() {
 			})
 			return
 		}
+
+		// 将获取到的join命令存储到master节点的JoinCommand字段中
+		masterNode.JoinCommand = cmd
+		_, err = nodeManager.UpdateNode(masterNode.ID, *masterNode)
+		if err != nil {
+			// 存储失败不影响返回结果，只记录错误
+			fmt.Printf("存储join命令到数据库失败: %v\n", err)
+		}
+
 		c.JSON(http.StatusOK, gin.H{
 			"command": cmd,
 		})
@@ -574,7 +799,7 @@ func main() {
 
 		// 创建SSH配置
 		sshConfig := kubeadm.SSHConfig{
-			Host:       masterNode.IP,
+			Host:       masterNode.Name,
 			Port:       masterNode.Port,
 			Username:   masterNode.Username,
 			Password:   masterNode.Password,
@@ -649,7 +874,7 @@ func main() {
 			return
 		}
 
-		// 创建SSH配置
+		// 创建SSH配置，首先使用IP地址连接（确保在任何hosts文件更新之前都能连接）
 		sshConfig := kubeadm.SSHConfig{
 			Host:       workerNode.IP,
 			Port:       workerNode.Port,
@@ -735,7 +960,7 @@ func main() {
 		}
 		nodeManager.CreateLog(deployLog)
 
-		fmt.Printf("开始部署Kubernetes集群\n节点ID列表: %v\n版本: %s\n架构: %s\n发行版: %s\n", req.NodeIds, req.KubeVersion, req.Arch, req.Distro)
+		fmt.Printf("开始部署Kubernetes集群\n节点ID列表: %s\n版本: %s\n架构: %s\n发行版: %s\n", strings.Join(req.NodeIds, ", "), req.KubeVersion, req.Arch, req.Distro)
 
 		// 获取所有指定的节点
 		var nodes []node.Node
@@ -760,11 +985,11 @@ func main() {
 		}
 
 		// 更新部署日志，添加节点信息
-		deployLog.Output = fmt.Sprintf("节点列表: %v\n开始部署...", nodeNames)
+		deployLog.Output = fmt.Sprintf("节点列表: %s\n开始部署...", strings.Join(nodeNames, ", "))
 		deployLog.UpdatedAt = time.Now()
 		nodeManager.CreateLog(deployLog)
 
-		fmt.Printf("节点列表: %v\n", nodeNames)
+		fmt.Printf("节点列表: %s\n", strings.Join(nodeNames, ", "))
 
 		// 创建一个上下文，支持取消部署
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1510,17 +1735,60 @@ func main() {
 		c.Writer.Header().Set("Cache-Control", "no-cache")
 		c.Writer.Header().Set("Connection", "keep-alive")
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "*")
 
-		// 创建一个通道来接收日志
-		logChan := make(chan log.LogEntry)
+		// 立即发送一个心跳事件，确认连接建立
+		fmt.Fprintf(c.Writer, "data: {\"type\": \"heartbeat\", \"message\": \"连接已建立\"}\n\n")
+		c.Writer.(http.Flusher).Flush()
 
-		// 设置广播回调
-		if sqliteLogManager, ok := nodeManager.GetLogManager().(interface {
-			SetBroadcastCallback(callback func(log.LogEntry))
+		// 获取日志管理器
+		logManager := nodeManager.GetLogManager()
+
+		// 创建日志通道
+		var logChan <-chan log.LogEntry
+		var subscription log.LogSubscription
+
+		// 检查日志管理器是否支持订阅功能
+		if lm, ok := logManager.(interface {
+			SubscribeLogs() log.LogSubscription
+			UnsubscribeLogs(sub log.LogSubscription)
 		}); ok {
-			sqliteLogManager.SetBroadcastCallback(func(logEntry log.LogEntry) {
-				logChan <- logEntry
-			})
+			// 订阅日志事件
+			subscription = lm.SubscribeLogs()
+			logChan = subscription.Ch
+
+			// 客户端断开连接时取消订阅
+			defer func() {
+				lm.UnsubscribeLogs(subscription)
+			}()
+		} else {
+			// 如果不支持订阅功能，创建一个新的通道并定期发送心跳
+			ch := make(chan log.LogEntry, 100)
+			logChan = ch
+
+			// 定期发送心跳
+			go func() {
+				for {
+					select {
+					case <-time.After(30 * time.Second):
+						select {
+						case ch <- log.LogEntry{
+							ID:        fmt.Sprintf("heartbeat-%d", time.Now().UnixNano()),
+							Operation: "Heartbeat",
+							NodeName:  "系统",
+							CreatedAt: time.Now(),
+						}:
+							// 心跳发送成功
+						default:
+							// 通道已满，跳过此心跳
+						}
+					case <-c.Request.Context().Done():
+						close(ch)
+						return
+					}
+				}
+			}()
 		}
 
 		// 客户端断开连接时关闭通道
@@ -1537,8 +1805,12 @@ func main() {
 				return true
 			case <-c.Request.Context().Done():
 				// 客户端断开连接
-				close(logChan)
 				return false
+			case <-time.After(60 * time.Second):
+				// 60秒内没有日志，发送一个心跳事件，保持连接活跃
+				fmt.Fprintf(w, "data: {\"type\": \"heartbeat\", \"message\": \"连接保持活跃\"}\n\n")
+				c.Writer.(http.Flusher).Flush()
+				return true
 			}
 		})
 	})
