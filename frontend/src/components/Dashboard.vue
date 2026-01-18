@@ -32,19 +32,19 @@
           <div class="card-body">
             <div class="stat-grid">
               <div class="stat-item">
-                <span class="stat-value">{{ nodes.length }}</span>
+                <span class="stat-value">{{ (nodes || []).filter(n => n).length }}</span>
                 <span class="stat-label">总节点</span>
               </div>
               <div class="stat-item">
-                <span class="stat-value">{{ nodes.filter(n => n.nodeType === 'master').length }}</span>
+                <span class="stat-value">{{ (nodes || []).filter(n => n && n.nodeType === 'master').length }}</span>
                 <span class="stat-label">Master</span>
               </div>
               <div class="stat-item">
-                <span class="stat-value">{{ nodes.filter(n => n.nodeType === 'worker').length }}</span>
+                <span class="stat-value">{{ (nodes || []).filter(n => n && n.nodeType === 'worker').length }}</span>
                 <span class="stat-label">Worker</span>
               </div>
               <div class="stat-item">
-                <span class="stat-value">{{ nodes.filter(n => n.status === 'ready').length }}</span>
+                <span class="stat-value">{{ (nodes || []).filter(n => n && n.status === 'ready').length }}</span>
                 <span class="stat-label">就绪</span>
               </div>
             </div>
@@ -84,6 +84,10 @@
 <script setup>
 // 定义组件的属性和事件
 const props = defineProps({
+  availableVersions: {
+    type: Array,
+    default: () => []
+  },
   kubeadmVersion: {
     type: String,
     default: ''
@@ -95,6 +99,10 @@ const props = defineProps({
   nodes: {
     type: Array,
     default: () => []
+  },
+  systemOnline: {
+    type: Boolean,
+    default: true
   }
 })
 

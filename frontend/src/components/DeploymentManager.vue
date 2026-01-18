@@ -2,101 +2,120 @@
   <div class="deployment-manager">
     <h2>部署流程管理</h2>
     
-    <div class="source-switcher">
+    <!-- 简化的部署源管理，只展示当前选择的源 -->
+    <div class="source-switcher simple">
       <div class="section-header">
         <h3>部署源管理</h3>
-        <div class="source-distro-selector">
-          <label for="source-distro">选择发行版本:</label>
-          <select id="source-distro" v-model="activeDistro" class="form-input">
-            <option v-for="system in systems" :key="system" :value="system">{{ system }}</option>
-          </select>
+      </div>
+      <div class="source-options simple">
+        <div class="source-option simple">
+          <div class="source-label">{{ deploymentSources[activeSystem] && deploymentSources[activeSystem].length > 0 && selectedSources[activeSystem] ? deploymentSources[activeSystem].find(source => source.id === selectedSources[activeSystem])?.name || '默认源' : '默认源' }}</div>
+          <div class="source-url">{{ deploymentSources[activeSystem] && deploymentSources[activeSystem].length > 0 && selectedSources[activeSystem] ? deploymentSources[activeSystem].find(source => source.id === selectedSources[activeSystem])?.url || 'https://pkgs.k8s.io/' : 'https://pkgs.k8s.io/' }}</div>
         </div>
-      </div>
-      <div class="source-options">
-        <label v-for="source in (deploymentSources[activeDistro] || [])" :key="source.id" class="source-option">
-          <input 
-            type="radio" 
-            v-model="selectedSources[activeDistro]" 
-            :value="source.id" 
-            @change="switchSource(source, activeDistro)"
-          >
-          <span class="source-label">{{ source.name }}</span>
-          <span class="source-url">{{ source.url }}</span>
-        </label>
-      </div>
-      <div class="source-actions-bottom">
-        <button class="btn btn-primary" @click="applySource">应用当前源</button>
-        <button class="btn btn-secondary" @click="applySourceToAll">应用到所有版本</button>
       </div>
     </div>
     
-
-    
-    <div class="process-list">
-      <h3>部署流程列表</h3>
-      <div class="system-tabs">
-        <button 
-          v-for="system in systems" 
-          :key="system" 
-          class="tab-btn" 
-          :class="{ active: activeSystem === system }"
-          @click="activeSystem = system"
-        >
-          {{ system }}
-        </button>
+    <!-- 简化的部署流程列表，只展示基本步骤信息 -->
+    <div class="process-list simple">
+      <div class="section-header">
+        <h3>部署流程列表</h3>
+        <div class="header-actions">
+          <button 
+            class="btn" 
+            style="background-color: var(--primary-color); color: white; margin-right: 8px;" 
+            @click="syncScriptsToBackend" 
+            :disabled="isSyncing"
+            title="将当前脚本同步到后端"
+          >
+            <span v-if="isSyncing" class="loading-spinner"></span>
+            <span v-else>📤</span>
+            {{ isSyncing ? '同步中...' : '同步到后端' }}
+          </button>
+          <button 
+            class="btn btn-sync" 
+            @click="resetScriptsToDefault" 
+            :disabled="isSyncing"
+            title="将所有脚本重置为后端默认值"
+          >
+            <span v-if="isSyncing" class="loading-spinner"></span>
+            <span v-else>🔄</span>
+            {{ isSyncing ? '重置中...' : '重置所有脚本' }}
+          </button>
+        </div>
+        <div class="system-tabs simple">
+          <button 
+            v-for="system in systems" 
+            :key="system" 
+            class="tab-btn" 
+            :class="{ active: activeSystem === system }"
+            @click="activeSystem = system"
+          >
+            {{ system }}
+          </button>
+        </div>
       </div>
       
-      <div class="process-steps" v-if="currentProcess">
+      <div class="process-steps simple">
         <div 
           v-for="(step, index) in currentProcess.steps" 
           :key="index" 
-          class="process-step"
+          class="process-step simple"
         >
           <div class="step-header">
             <div class="step-number">{{ index + 1 }}</div>
             <div class="step-info">
-              <div class="step-title-row">
-                <h4>{{ step.name }}</h4>
-                <button class="btn btn-small" @click="editScript(index)">编辑脚本</button>
-              </div>
-              <p class="step-description">{{ step.description }}</p>
+              <h4>{{ step.name || '未命名步骤' }}</h4>
+              <p class="step-description">{{ step.description || '无描述' }}</p>
             </div>
+            <button 
+              class="btn btn-small btn-primary edit-script-btn"
+              @click="editScript(step, index)"
+            >
+              <span class="btn-icon">✏️</span>
+              编辑脚本
+            </button>
           </div>
-          <div class="step-content">
-            <div class="step-script">
-              <div class="script-header">
-                <h5>使用的脚本</h5>
-              </div>
-              <pre>{{ step.script }}</pre>
-            </div>
+          <div class="step-script">
+            <h5>脚本内容</h5>
+            <pre>{{ step.script || '无脚本内容' }}</pre>
           </div>
         </div>
       </div>
+      
+      <!-- 同步结果提示 -->
+      <div v-if="syncResult" class="sync-result" :class="{ 'sync-success': syncResult.success, 'sync-failed': !syncResult.success }">
+        <div class="sync-result-header">
+          <span class="sync-icon">{{ syncResult.success ? '✅' : '❌' }}</span>
+          <span class="sync-message">{{ syncResult.message }}</span>
+          <span class="sync-time">{{ syncResult.time }}</span>
+        </div>
+      </div>
     </div>
-    
-    <!-- 脚本编辑对话框 -->
-    <div v-if="showEditScriptDialog" class="dialog-overlay" @click="closeEditScriptDialog">
-      <div class="dialog-content dialog-large" @click.stop>
-        <div class="dialog-header">
-          <h4>编辑脚本 - {{ currentEditingStep?.name }}</h4>
-          <button class="dialog-close" @click="closeEditScriptDialog">&times;</button>
+  </div>
+  
+  <!-- 脚本编辑对话框 -->
+  <div v-if="showEditScriptDialog" class="dialog-overlay" @click="closeEditScriptDialog">
+    <div class="dialog-content dialog-large" @click.stop>
+      <div class="dialog-header">
+        <h4>{{ currentEditingStep ? `编辑步骤: ${currentEditingStep.name}` : '编辑脚本' }}</h4>
+        <button class="dialog-close" @click="closeEditScriptDialog">&times;</button>
+      </div>
+      <div class="dialog-body">
+        <div class="form-group">
+          <label for="editScriptTextarea">脚本内容:</label>
+          <textarea 
+            id="editScriptTextarea" 
+            class="form-textarea" 
+            v-model="editingScript" 
+            placeholder="输入部署脚本..."
+            rows="15"
+          ></textarea>
         </div>
-        <div class="dialog-body">
-          <div class="form-group">
-            <label for="script-content">脚本内容</label>
-            <textarea 
-              id="script-content" 
-              v-model="editingScript" 
-              placeholder="请输入脚本内容..."
-              class="form-textarea"
-              rows="20"
-            ></textarea>
-          </div>
-        </div>
-        <div class="dialog-footer">
-          <button class="btn" @click="closeEditScriptDialog">取消</button>
-          <button class="btn btn-primary" @click="saveScript">保存脚本</button>
-        </div>
+      </div>
+      <div class="dialog-footer">
+        <button class="btn btn-secondary" @click="closeEditScriptDialog">取消</button>
+        <button class="btn" style="background-color: var(--warning-color); color: white;" @click="restoreDefaultScript">恢复默认值</button>
+        <button class="btn btn-primary" @click="saveScript">保存脚本</button>
       </div>
     </div>
   </div>
@@ -105,6 +124,9 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import axios from 'axios'
+
+// 定义version变量，用于模板字符串解析，避免ReferenceError
+const version = 'v1.28'
 
 // localStorage辅助函数
 const loadFromLocalStorage = (key, defaultValue) => {
@@ -215,6 +237,17 @@ const editingScript = ref('')
 const systems = ref(['centos', 'ubuntu', 'debian', 'rocky', 'almalinux'])
 const activeDistro = ref('centos')
 
+// 定义组件的属性和事件
+const props = defineProps({
+  availableVersions: { type: Array, default: () => [] },
+  kubeadmVersion: { type: String, default: '' },
+  nodes: { type: Array, default: () => [] },
+  systemOnline: { type: Boolean, default: true },
+  apiStatus: { type: String, default: 'online' }
+})
+
+const emit = defineEmits(['showMessage'])
+
 // 确保activeSystem的初始值是有效的
 const activeSystem = ref(systems.value[0] || 'centos')
 
@@ -222,108 +255,42 @@ const activeSystem = ref(systems.value[0] || 'centos')
 const kubernetesVersions = ref(['v1.28', 'v1.29', 'v1.30'])
 const selectedKubernetesVersion = ref(loadFromLocalStorage('selectedKubernetesVersion', 'v1.28'))
 
-// 部署流程默认数据
+// 简化的部署流程默认数据
 const defaultProcessData = {
   centos: {
     name: 'CentOS/RHEL 部署流程',
     steps: [
       {
         name: '系统准备',
-        description: '禁用swap、配置时间同步、关闭防火墙等',
-        script: '# 禁用swap\nsudo swapoff -a\nsudo sed -i \'/ swap / s/^#//\' /etc/fstab\n\n# 安装并启动时间同步服务\nsudo yum install -y chrony\nsudo systemctl enable --now chronyd\nsudo timedatectl set-timezone Asia/Shanghai\n\n# 关闭防火墙\nsudo systemctl stop firewalld || true\nsudo systemctl disable firewalld || true\n\n# 禁用SELinux\nsudo setenforce 0\nsudo sed -i \'s/^SELINUX=enforcing$/SELINUX=permissive/\' /etc/selinux/config\n\n# 加载K8s所需内核模块\ncat <<EOF > /etc/modules-load.d/k8s.conf\noverlay\nbr_netfilter\nEOF\nsudo modprobe overlay\nsudo modprobe br_netfilter\n\n# 设置内核参数\n# 使用EOF方式写入IP转发配置文件\ncat <<EOF > /etc/sysctl.d/99-kubernetes-ipforward.conf\nnet.ipv4.ip_forward = 1\nEOF\n\n# 设置其他Kubernetes所需内核参数\ncat <<EOF > /etc/sysctl.d/k8s.conf\nnet.bridge.bridge-nf-call-iptables = 1\nnet.bridge.bridge-nf-call-ip6tables = 1\nEOF\n\n# 应用内核参数\nsudo sysctl --system'
+        description: '禁用swap、配置时间同步、关闭防火墙等'
       },
       {
         name: '安装容器运行时',
-        description: '安装containerd容器运行时',
-        script: '# 安装containerd\nsudo yum install -y containerd.io'
+        description: '安装containerd容器运行时'
       },
       {
         name: '配置容器运行时',
-        description: '配置containerd并启动服务',
-        script: '# 配置containerd\nsudo mkdir -p /etc/containerd\nsudo containerd config default > /etc/containerd/config.toml\nsudo sed -i \'s/SystemdCgroup = false/SystemdCgroup = true/g\' /etc/containerd/config.toml\n\n# 启动前先停止可能运行的containerd进程\necho "停止可能运行的containerd进程..."\nsudo pkill -f containerd || true\nsleep 2\n\n# 清理旧的containerd socket和状态文件\necho "清理旧的containerd socket和状态文件..."\nsudo rm -f /run/containerd/containerd.sock\nsudo rm -rf /var/run/containerd\nsudo mkdir -p /var/run/containerd\n\n# 启动并启用containerd服务\necho "启动containerd服务..."\nsudo systemctl daemon-reload\nsudo systemctl restart containerd\nsudo systemctl enable containerd\n\n# 等待containerd启动，增加等待时间\necho "等待containerd启动..."\nsleep 10\n\n# 检查containerd状态\necho "=== 检查containerd状态 ==="\nif command -v systemctl &> /dev/null; then\n    systemctl_status=$(sudo systemctl is-active containerd)\n    echo "containerd服务状态: $systemctl_status"\n    \n    # 显示containerd服务详细状态\n    echo "containerd服务详细状态:"\n    sudo systemctl status containerd --no-pager\nfi\n\n# 检查containerd socket是否存在\necho "=== 检查containerd socket ==="\ncri_socket="/run/containerd/containerd.sock"\nif [ -S "$cri_socket" ]; then\n    echo "CRI socket $cri_socket 存在"\n    # 测试socket连接\n    echo "测试containerd连接..."\n    if command -v ctr &> /dev/null; then\n        ctr version\n    fi\nelse\n    echo "警告: CRI socket $cri_socket 不存在，检查containerd日志..."\n    sudo journalctl -u containerd --no-pager -n 30\n    \n    # 尝试手动启动containerd\n    echo "尝试手动启动containerd..."\n    containerd --version\n    containerd &\n    sleep 5\n    \n    # 再次检查socket\n    if [ -S "$cri_socket" ]; then\n        echo "手动启动成功，CRI socket $cri_socket 现在存在"\n    else\n        echo "手动启动失败，CRI socket $cri_socket 仍然不存在"\n    fi\nfi'
+        description: '配置containerd并启动服务'
       },
       {
         name: '添加Kubernetes仓库',
-        description: '添加官方Kubernetes仓库',
-        script: '# 添加Kubernetes仓库\n# 清理旧的Kubernetes仓库配置\nsudo rm -f /etc/yum.repos.d/kubernetes.repo\nsudo rm -f /etc/yum.repos.d/packages.cloud.google.com_yum_repos_kubernetes-el7-x86_64.repo\n\n# 添加新的Kubernetes仓库\nsudo cat <<EOF > /etc/yum.repos.d/kubernetes.repo\n[kubernetes]\nname=Kubernetes\nbaseurl=https://pkgs.k8s.io/core:/stable:/v1.28/rpm/\nenabled=1\ngpgcheck=1\ngpgkey=https://pkgs.k8s.io/core:/stable:/v1.28/rpm/repodata/repomd.xml.key\nexclude=kubelet kubeadm kubectl\nEOF\n\n# 更新仓库缓存\nsudo yum makecache'
+        description: '添加官方Kubernetes仓库'
       },
       {
         name: '安装Kubernetes组件',
-        description: '安装kubelet、kubeadm和kubectl',
-        script: '# 安装Kubernetes组件\nsudo yum install -y kubelet${version} kubeadm${version} kubectl${version} --disableexcludes=kubernetes\n\n# 启动kubelet\nsudo systemctl enable --now kubelet'
+        description: '安装kubelet、kubeadm和kubectl'
       },
       {
         name: '初始化Kubernetes集群',
-        description: '执行kubeadm init初始化Master节点',
-        script: '# 初始化Kubernetes集群
-# 在执行kubeadm init前检查并确保containerd正常运行
-echo "=== 检查并确保containerd正常运行 ==="
-
-# 1. 检查containerd服务状态
-echo "1. 检查containerd服务状态..."
-containerd_status=$(sudo systemctl is-active containerd 2>/dev/null || echo "inactive")
-echo "containerd服务状态: $containerd_status"
-
-# 2. 如果containerd没有运行，尝试启动它
-if [ "$containerd_status" != "active" ]; then
-    echo "2. containerd未运行，尝试启动..."
-    sudo systemctl daemon-reload
-    sudo systemctl start containerd
-    # 等待5秒让containerd启动
-    sleep 5
-    # 再次检查状态
-    containerd_status=$(sudo systemctl is-active containerd 2>/dev/null || echo "inactive")
-    echo "启动后containerd服务状态: $containerd_status"
-fi
-
-# 3. 检查containerd socket是否存在
-echo "3. 检查containerd socket是否存在..."
-cri_socket="/run/containerd/containerd.sock"
-if [ ! -S "$cri_socket" ]; then
-    echo "4. containerd socket不存在，尝试手动启动containerd..."
-    # 停止可能存在的containerd进程
-    sudo pkill -f containerd || true
-    sleep 2
-    # 清理旧的socket和状态文件
-    sudo rm -rf /run/containerd /var/run/containerd
-    sudo mkdir -p /var/run/containerd
-    # 手动启动containerd
-    containerd --version
-    containerd &
-    # 等待10秒让containerd启动
-    sleep 10
-    # 再次检查socket
-    if [ -S "$cri_socket" ]; then
-        echo "5. 手动启动成功，containerd socket已创建"
-    else
-        echo "6. 手动启动失败，containerd socket仍不存在"
-        echo "=== 显示containerd日志 ==="
-        sudo journalctl -u containerd --no-pager -n 50
-        echo "=== 尝试使用systemd状态检查 ==="
-        sudo systemctl status containerd --no-pager
-        echo "✗ 无法启动containerd，kubeadm init将失败"
-        exit 1
-    fi
-else
-    echo "4. containerd socket已存在"
-fi
-
-# 5. 测试containerd连接
-echo "5. 测试containerd连接..."
-if command -v ctr &> /dev/null; then
-    ctr_version=$(ctr version 2>&1 || echo "连接失败")
-    echo "containerd版本信息: $ctr_version"
-fi
-
-# 6. 最终确认containerd状态
-echo "6. 最终确认containerd状态..."
-final_status=$(sudo systemctl is-active containerd 2>/dev/null || echo "inactive")
-final_socket=$(if [ -S "$cri_socket" ]; then echo "存在"; else echo "不存在"; fi)
-echo "最终containerd服务状态: $final_status"
-echo "最终containerd socket状态: $final_socket"
-
-# 执行kubeadm init
-echo "=== 执行kubeadm init ==="\nsudo kubeadm init --pod-network-cidr=10.244.0.0/16 --upload-certs\n\n# 检查kubeadm init是否成功\nif [ $? -eq 0 ]; then\n    echo "=== kubeadm init 成功 ==="\n    \n    # 配置kubectl\necho "=== 配置kubectl ==="\nmkdir -p $HOME/.kube\n    \n    # 检查admin.conf是否存在\n    if [ -f /etc/kubernetes/admin.conf ]; then\n        echo "✓ 找到admin.conf文件，正在配置kubectl..."\n        sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config\n        sudo chown $(id -u):$(id -g) $HOME/.kube/config\n        echo "✓ kubectl配置成功"\n    else\n        echo "✗ 未找到admin.conf文件，可能初始化过程中出现问题"\n    fi\n    \n    # 安装CNI网络插件（使用Flannel）\n    if [ -f $HOME/.kube/config ]; then\n        echo "=== 安装Flannel网络插件 ==="\n        kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml\n    else\n        echo "✗ 无法安装CNI插件，kubectl配置失败"\n    fi\nelse\n    echo "✗ kubeadm init 失败"\n    # 显示更多错误信息\n    echo "=== 显示kubeadm日志 ==="\n    sudo journalctl -u kubelet --no-pager -n 50\nfi'
+        description: '执行kubeadm init初始化Master节点'
+      },
+      {
+        name: '生成Worker节点加入命令',
+        description: '在Master节点上生成kubeadm join命令'
+      },
+      {
+        name: 'Worker节点加入集群',
+        description: '执行kubeadm join将Worker节点加入集群'
       }
     ]
   },
@@ -332,33 +299,35 @@ echo "=== 执行kubeadm init ==="\nsudo kubeadm init --pod-network-cidr=10.244.0
     steps: [
       {
         name: '系统准备',
-        description: '禁用swap、配置时间同步、关闭防火墙等',
-        script: '# 禁用swap\nsudo swapoff -a\nsudo sed -i \'/ swap / s/^#//\' /etc/fstab\n\n# 安装并启动时间同步服务\nsudo apt update\nsudo apt install -y chrony\nsudo systemctl enable --now chronyd\nsudo timedatectl set-timezone Asia/Shanghai\n\n# 关闭防火墙\nsudo systemctl stop ufw || true\nsudo systemctl disable ufw || true\n\n# 加载K8s所需内核模块\ncat <<EOF > /etc/modules-load.d/k8s.conf\noverlay\nbr_netfilter\nEOF\nsudo modprobe overlay\nsudo modprobe br_netfilter\n\n# 设置内核参数\n# 使用EOF方式写入IP转发配置文件\ncat <<EOF > /etc/sysctl.d/99-kubernetes-ipforward.conf\nnet.ipv4.ip_forward = 1\nEOF\n\n# 设置其他Kubernetes所需内核参数\ncat <<EOF > /etc/sysctl.d/k8s.conf\nnet.bridge.bridge-nf-call-iptables = 1\nnet.bridge.bridge-nf-call-ip6tables = 1\nEOF\n\n# 应用内核参数\nsudo sysctl --system'
+        description: '禁用swap、配置时间同步、关闭防火墙等'
       },
       {
         name: '安装容器运行时',
-        description: '安装containerd容器运行时',
-        script: '# 安装containerd\nsudo apt update\nsudo apt install -y containerd.io'
+        description: '安装containerd容器运行时'
       },
       {
         name: '配置容器运行时',
-        description: '配置containerd并启动服务',
-        script: '# 配置containerd\nsudo mkdir -p /etc/containerd\nsudo containerd config default > /etc/containerd/config.toml\nsudo sed -i \'s/SystemdCgroup = false/SystemdCgroup = true/g\' /etc/containerd/config.toml\n\n# 启动前先停止可能运行的containerd进程\necho "停止可能运行的containerd进程..."\nsudo pkill -f containerd || true\nsleep 2\n\n# 清理旧的containerd socket和状态文件\necho "清理旧的containerd socket和状态文件..."\nsudo rm -f /run/containerd/containerd.sock\nsudo rm -rf /var/run/containerd\nsudo mkdir -p /var/run/containerd\n\n# 启动并启用containerd服务\necho "启动containerd服务..."\nsudo systemctl daemon-reload\nsudo systemctl restart containerd\nsudo systemctl enable containerd\n\n# 等待containerd启动，增加等待时间\necho "等待containerd启动..."\nsleep 10\n\n# 检查containerd状态\necho "=== 检查containerd状态 ==="\nif command -v systemctl &> /dev/null; then\n    systemctl_status=$(sudo systemctl is-active containerd)\n    echo "containerd服务状态: $systemctl_status"\n    \n    # 显示containerd服务详细状态\n    echo "containerd服务详细状态:"\n    sudo systemctl status containerd --no-pager\nfi\n\n# 检查containerd socket是否存在\necho "=== 检查containerd socket ==="\ncri_socket="/run/containerd/containerd.sock"\nif [ -S "$cri_socket" ]; then\n    echo "CRI socket $cri_socket 存在"\n    # 测试socket连接\n    echo "测试containerd连接..."\n    if command -v ctr &> /dev/null; then\n        ctr version\n    fi\nelse\n    echo "警告: CRI socket $cri_socket 不存在，检查containerd日志..."\n    sudo journalctl -u containerd --no-pager -n 30\n    \n    # 尝试手动启动containerd\n    echo "尝试手动启动containerd..."\n    containerd --version\n    containerd &\n    sleep 5\n    \n    # 再次检查socket\n    if [ -S "$cri_socket" ]; then\n        echo "手动启动成功，CRI socket $cri_socket 现在存在"\n    else\n        echo "手动启动失败，CRI socket $cri_socket 仍然不存在"\n    fi\nfi'
+        description: '配置containerd并启动服务'
       },
       {
         name: '添加Kubernetes仓库',
-        description: '添加官方Kubernetes仓库',
-        script: '# 添加Kubernetes仓库\nsudo apt update\nsudo apt install -y apt-transport-https ca-certificates curl gpg\n\n# 创建keyring目录\nsudo mkdir -p -m 755 /etc/apt/keyrings\n\n# 下载并安装GPG密钥\ncurl -fsSL -L https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg\n\n# 添加Kubernetes repo\necho "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list\n\n# 更新仓库缓存\nsudo apt update'
+        description: '添加官方Kubernetes仓库'
       },
       {
         name: '安装Kubernetes组件',
-        description: '安装kubelet、kubeadm和kubectl',
-        script: '# 安装Kubernetes组件\nsudo apt install -y kubelet${version} kubeadm${version} kubectl${version}\n\n# 启动kubelet\nsudo systemctl enable --now kubelet'
+        description: '安装kubelet、kubeadm和kubectl'
       },
       {
         name: '初始化Kubernetes集群',
-        description: '执行kubeadm init初始化Master节点',
-        script: '# 初始化Kubernetes集群\n# 执行kubeadm init\necho "=== 执行kubeadm init ==="\nsudo kubeadm init --pod-network-cidr=10.244.0.0/16 --upload-certs\n\n# 检查kubeadm init是否成功\nif [ $? -eq 0 ]; then\n    echo "=== kubeadm init 成功 ==="\n    \n    # 配置kubectl\necho "=== 配置kubectl ==="\nmkdir -p $HOME/.kube\n    \n    # 检查admin.conf是否存在\n    if [ -f /etc/kubernetes/admin.conf ]; then\n        echo "✓ 找到admin.conf文件，正在配置kubectl..."\n        sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config\n        sudo chown $(id -u):$(id -g) $HOME/.kube/config\n        echo "✓ kubectl配置成功"\n    else\n        echo "✗ 未找到admin.conf文件，可能初始化过程中出现问题"\n    fi\n    \n    # 安装CNI网络插件（使用Flannel）\n    if [ -f $HOME/.kube/config ]; then\n        echo "=== 安装Flannel网络插件 ==="\n        kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml\n    else\n        echo "✗ 无法安装CNI插件，kubectl配置失败"\n    fi\nelse\n    echo "✗ kubeadm init 失败"\n    # 显示更多错误信息\n    echo "=== 显示kubeadm日志 ==="\n    sudo journalctl -u kubelet --no-pager -n 50\nfi'
+        description: '执行kubeadm init初始化Master节点'
+      },
+      {
+        name: '生成Worker节点加入命令',
+        description: '在Master节点上生成kubeadm join命令'
+      },
+      {
+        name: 'Worker节点加入集群',
+        description: '执行kubeadm join将Worker节点加入集群'
       }
     ]
   },
@@ -367,33 +336,35 @@ echo "=== 执行kubeadm init ==="\nsudo kubeadm init --pod-network-cidr=10.244.0
     steps: [
       {
         name: '系统准备',
-        description: '禁用swap、配置时间同步、关闭防火墙等',
-        script: '# 禁用swap\nsudo swapoff -a\nsudo sed -i \'/ swap / s/^#//\' /etc/fstab\n\n# 安装并启动时间同步服务\nsudo apt update\nsudo apt install -y chrony\nsudo systemctl enable --now chronyd\nsudo timedatectl set-timezone Asia/Shanghai\n\n# 关闭防火墙\nsudo systemctl stop ufw || true\nsudo systemctl disable ufw || true\n\n# 加载K8s所需内核模块\ncat <<EOF > /etc/modules-load.d/k8s.conf\noverlay\nbr_netfilter\nEOF\nsudo modprobe overlay\nsudo modprobe br_netfilter\n\n# 设置内核参数\n# 使用EOF方式写入IP转发配置文件\ncat <<EOF > /etc/sysctl.d/99-kubernetes-ipforward.conf\nnet.ipv4.ip_forward = 1\nEOF\n\n# 设置其他Kubernetes所需内核参数\ncat <<EOF > /etc/sysctl.d/k8s.conf\nnet.bridge.bridge-nf-call-iptables = 1\nnet.bridge.bridge-nf-call-ip6tables = 1\nEOF\n\n# 应用内核参数\nsudo sysctl --system'
+        description: '禁用swap、配置时间同步、关闭防火墙等'
       },
       {
         name: '安装容器运行时',
-        description: '安装containerd容器运行时',
-        script: '# 安装containerd\nsudo apt update\nsudo apt install -y containerd.io'
+        description: '安装containerd容器运行时'
       },
       {
         name: '配置容器运行时',
-        description: '配置containerd并启动服务',
-        script: '# 配置containerd\nsudo mkdir -p /etc/containerd\nsudo containerd config default > /etc/containerd/config.toml\nsudo sed -i \'s/SystemdCgroup = false/SystemdCgroup = true/g\' /etc/containerd/config.toml\n\n# 启动前先停止可能运行的containerd进程\necho "停止可能运行的containerd进程..."\nsudo pkill -f containerd || true\nsleep 2\n\n# 清理旧的containerd socket和状态文件\necho "清理旧的containerd socket和状态文件..."\nsudo rm -f /run/containerd/containerd.sock\nsudo rm -rf /var/run/containerd\nsudo mkdir -p /var/run/containerd\n\n# 启动并启用containerd服务\necho "启动containerd服务..."\nsudo systemctl daemon-reload\nsudo systemctl restart containerd\nsudo systemctl enable containerd\n\n# 等待containerd启动，增加等待时间\necho "等待containerd启动..."\nsleep 10\n\n# 检查containerd状态\necho "=== 检查containerd状态 ==="\nif command -v systemctl &> /dev/null; then\n    systemctl_status=$(sudo systemctl is-active containerd)\n    echo "containerd服务状态: $systemctl_status"\n    \n    # 显示containerd服务详细状态\n    echo "containerd服务详细状态:"\n    sudo systemctl status containerd --no-pager\nfi\n\n# 检查containerd socket是否存在\necho "=== 检查containerd socket ==="\ncri_socket="/run/containerd/containerd.sock"\nif [ -S "$cri_socket" ]; then\n    echo "CRI socket $cri_socket 存在"\n    # 测试socket连接\n    echo "测试containerd连接..."\n    if command -v ctr &> /dev/null; then\n        ctr version\n    fi\nelse\n    echo "警告: CRI socket $cri_socket 不存在，检查containerd日志..."\n    sudo journalctl -u containerd --no-pager -n 30\n    \n    # 尝试手动启动containerd\n    echo "尝试手动启动containerd..."\n    containerd --version\n    containerd &\n    sleep 5\n    \n    # 再次检查socket\n    if [ -S "$cri_socket" ]; then\n        echo "手动启动成功，CRI socket $cri_socket 现在存在"\n    else\n        echo "手动启动失败，CRI socket $cri_socket 仍然不存在"\n    fi\nfi'
+        description: '配置containerd并启动服务'
       },
       {
         name: '添加Kubernetes仓库',
-        description: '添加官方Kubernetes仓库',
-        script: '# 添加Kubernetes仓库\nsudo apt update\nsudo apt install -y apt-transport-https ca-certificates curl gpg\n\n# 创建keyring目录\nsudo mkdir -p -m 755 /etc/apt/keyrings\n\n# 下载并安装GPG密钥\ncurl -fsSL -L https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg\n\n# 添加Kubernetes repo\necho "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list\n\n# 更新仓库缓存\nsudo apt update'
+        description: '添加官方Kubernetes仓库'
       },
       {
         name: '安装Kubernetes组件',
-        description: '安装kubelet、kubeadm和kubectl',
-        script: '# 安装Kubernetes组件\nsudo apt install -y kubelet${version} kubeadm${version} kubectl${version}\n\n# 启动kubelet\nsudo systemctl enable --now kubelet'
+        description: '安装kubelet、kubeadm和kubectl'
       },
       {
         name: '初始化Kubernetes集群',
-        description: '执行kubeadm init初始化Master节点',
-        script: '# 初始化Kubernetes集群\n# 执行kubeadm init\necho "=== 执行kubeadm init ==="\nsudo kubeadm init --pod-network-cidr=10.244.0.0/16 --upload-certs\n\n# 检查kubeadm init是否成功\nif [ $? -eq 0 ]; then\n    echo "=== kubeadm init 成功 ==="\n    \n    # 配置kubectl\necho "=== 配置kubectl ==="\nmkdir -p $HOME/.kube\n    \n    # 检查admin.conf是否存在\n    if [ -f /etc/kubernetes/admin.conf ]; then\n        echo "✓ 找到admin.conf文件，正在配置kubectl..."\n        sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config\n        sudo chown $(id -u):$(id -g) $HOME/.kube/config\n        echo "✓ kubectl配置成功"\n    else\n        echo "✗ 未找到admin.conf文件，可能初始化过程中出现问题"\n    fi\n    \n    # 安装CNI网络插件（使用Flannel）\n    if [ -f $HOME/.kube/config ]; then\n        echo "=== 安装Flannel网络插件 ==="\n        kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml\n    else\n        echo "✗ 无法安装CNI插件，kubectl配置失败"\n    fi\nelse\n    echo "✗ kubeadm init 失败"\n    # 显示更多错误信息\n    echo "=== 显示kubeadm日志 ==="\n    sudo journalctl -u kubelet --no-pager -n 50\nfi'
+        description: '执行kubeadm init初始化Master节点'
+      },
+      {
+        name: '生成Worker节点加入命令',
+        description: '在Master节点上生成kubeadm join命令'
+      },
+      {
+        name: 'Worker节点加入集群',
+        description: '执行kubeadm join将Worker节点加入集群'
       }
     ]
   },
@@ -402,33 +373,35 @@ echo "=== 执行kubeadm init ==="\nsudo kubeadm init --pod-network-cidr=10.244.0
     steps: [
       {
         name: '系统准备',
-        description: '禁用swap、配置时间同步、关闭防火墙等',
-        script: '# 禁用swap\nsudo swapoff -a\nsudo sed -i \'/ swap / s/^#//\' /etc/fstab\n\n# 安装并启动时间同步服务\nsudo dnf install -y chrony\nsudo systemctl enable --now chronyd\nsudo timedatectl set-timezone Asia/Shanghai\n\n# 关闭防火墙\nsudo systemctl stop firewalld || true\nsudo systemctl disable firewalld || true\n\n# 禁用SELinux\nsudo setenforce 0\nsudo sed -i \'s/^SELINUX=enforcing$/SELINUX=permissive/\' /etc/selinux/config\n\n# 加载K8s所需内核模块\ncat <<EOF > /etc/modules-load.d/k8s.conf\noverlay\nbr_netfilter\nEOF\nsudo modprobe overlay\nsudo modprobe br_netfilter\n\n# 设置内核参数\n# 使用EOF方式写入IP转发配置文件\ncat <<EOF > /etc/sysctl.d/99-kubernetes-ipforward.conf\nnet.ipv4.ip_forward = 1\nEOF\n\n# 设置其他Kubernetes所需内核参数\ncat <<EOF > /etc/sysctl.d/k8s.conf\nnet.bridge.bridge-nf-call-iptables = 1\nnet.bridge.bridge-nf-call-ip6tables = 1\nEOF\n\n# 应用内核参数\nsudo sysctl --system'
+        description: '禁用swap、配置时间同步、关闭防火墙等'
       },
       {
         name: '安装容器运行时',
-        description: '安装containerd容器运行时',
-        script: '# 安装containerd\nsudo dnf install -y containerd.io'
+        description: '安装containerd容器运行时'
       },
       {
         name: '配置容器运行时',
-        description: '配置containerd并启动服务',
-        script: '# 配置containerd\nsudo mkdir -p /etc/containerd\nsudo containerd config default > /etc/containerd/config.toml\nsudo sed -i \'s/SystemdCgroup = false/SystemdCgroup = true/g\' /etc/containerd/config.toml\n\n# 启动前先停止可能运行的containerd进程\necho "停止可能运行的containerd进程..."\nsudo pkill -f containerd || true\nsleep 2\n\n# 清理旧的containerd socket和状态文件\necho "清理旧的containerd socket和状态文件..."\nsudo rm -f /run/containerd/containerd.sock\nsudo rm -rf /var/run/containerd\nsudo mkdir -p /var/run/containerd\n\n# 启动并启用containerd服务\necho "启动containerd服务..."\nsudo systemctl daemon-reload\nsudo systemctl restart containerd\nsudo systemctl enable containerd\n\n# 等待containerd启动，增加等待时间\necho "等待containerd启动..."\nsleep 10\n\n# 检查containerd状态\necho "=== 检查containerd状态 ==="\nif command -v systemctl &> /dev/null; then\n    systemctl_status=$(sudo systemctl is-active containerd)\n    echo "containerd服务状态: $systemctl_status"\n    \n    # 显示containerd服务详细状态\n    echo "containerd服务详细状态:"\n    sudo systemctl status containerd --no-pager\nfi\n\n# 检查containerd socket是否存在\necho "=== 检查containerd socket ==="\ncri_socket="/run/containerd/containerd.sock"\nif [ -S "$cri_socket" ]; then\n    echo "CRI socket $cri_socket 存在"\n    # 测试socket连接\n    echo "测试containerd连接..."\n    if command -v ctr &> /dev/null; then\n        ctr version\n    fi\nelse\n    echo "警告: CRI socket $cri_socket 不存在，检查containerd日志..."\n    sudo journalctl -u containerd --no-pager -n 30\n    \n    # 尝试手动启动containerd\n    echo "尝试手动启动containerd..."\n    containerd --version\n    containerd &\n    sleep 5\n    \n    # 再次检查socket\n    if [ -S "$cri_socket" ]; then\n        echo "手动启动成功，CRI socket $cri_socket 现在存在"\n    else\n        echo "手动启动失败，CRI socket $cri_socket 仍然不存在"\n    fi\nfi'
+        description: '配置containerd并启动服务'
       },
       {
         name: '添加Kubernetes仓库',
-        description: '添加官方Kubernetes仓库',
-        script: '# 添加Kubernetes仓库\n# 清理旧的Kubernetes仓库配置\nsudo rm -f /etc/yum.repos.d/kubernetes.repo\nsudo rm -f /etc/yum.repos.d/packages.cloud.google.com_yum_repos_kubernetes-el7-x86_64.repo\n\n# 添加新的Kubernetes仓库\nsudo cat <<EOF > /etc/yum.repos.d/kubernetes.repo\n[kubernetes]\nname=Kubernetes\nbaseurl=https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.28/rpm/\nenabled=1\ngpgcheck=1\ngpgkey=https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.28/rpm/repodata/repomd.xml.key\nexclude=kubelet kubeadm kubectl\nEOF\n\n# 更新仓库缓存\nsudo dnf makecache'
+        description: '添加官方Kubernetes仓库'
       },
       {
         name: '安装Kubernetes组件',
-        description: '安装kubelet、kubeadm和kubectl',
-        script: '# 安装Kubernetes组件\nsudo dnf install -y kubelet${version} kubeadm${version} kubectl${version} --disableexcludes=kubernetes\n\n# 启动kubelet\nsudo systemctl enable --now kubelet'
+        description: '安装kubelet、kubeadm和kubectl'
       },
       {
         name: '初始化Kubernetes集群',
-        description: '执行kubeadm init初始化Master节点',
-        script: '# 初始化Kubernetes集群\n# 执行kubeadm init\necho "=== 执行kubeadm init ==="\nsudo kubeadm init --pod-network-cidr=10.244.0.0/16 --upload-certs\n\n# 检查kubeadm init是否成功\nif [ $? -eq 0 ]; then\n    echo "=== kubeadm init 成功 ==="\n    \n    # 配置kubectl\necho "=== 配置kubectl ==="\nmkdir -p $HOME/.kube\n    \n    # 检查admin.conf是否存在\n    if [ -f /etc/kubernetes/admin.conf ]; then\n        echo "✓ 找到admin.conf文件，正在配置kubectl..."\n        sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config\n        sudo chown $(id -u):$(id -g) $HOME/.kube/config\n        echo "✓ kubectl配置成功"\n    else\n        echo "✗ 未找到admin.conf文件，可能初始化过程中出现问题"\n    fi\n    \n    # 安装CNI网络插件（使用Flannel）\n    if [ -f $HOME/.kube/config ]; then\n        echo "=== 安装Flannel网络插件 ==="\n        kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml\n    else\n        echo "✗ 无法安装CNI插件，kubectl配置失败"\n    fi\nelse\n    echo "✗ kubeadm init 失败"\n    # 显示更多错误信息\n    echo "=== 显示kubeadm日志 ==="\n    sudo journalctl -u kubelet --no-pager -n 50\nfi'
+        description: '执行kubeadm init初始化Master节点'
+      },
+      {
+        name: '生成Worker节点加入命令',
+        description: '在Master节点上生成kubeadm join命令'
+      },
+      {
+        name: 'Worker节点加入集群',
+        description: '执行kubeadm join将Worker节点加入集群'
       }
     ]
   },
@@ -437,267 +410,83 @@ echo "=== 执行kubeadm init ==="\nsudo kubeadm init --pod-network-cidr=10.244.0
     steps: [
       {
         name: '系统准备',
-        description: '禁用swap、配置时间同步、关闭防火墙等',
-        script: '# 禁用swap\nsudo swapoff -a\nsudo sed -i \'/ swap / s/^#//\' /etc/fstab\n\n# 安装并启动时间同步服务\nsudo dnf install -y chrony\nsudo systemctl enable --now chronyd\nsudo timedatectl set-timezone Asia/Shanghai\n\n# 关闭防火墙\nsudo systemctl stop firewalld || true\nsudo systemctl disable firewalld || true\n\n# 禁用SELinux\nsudo setenforce 0\nsudo sed -i \'s/^SELINUX=enforcing$/SELINUX=permissive/\' /etc/selinux/config\n\n# 加载K8s所需内核模块\ncat <<EOF > /etc/modules-load.d/k8s.conf\noverlay\nbr_netfilter\nEOF\nsudo modprobe overlay\nsudo modprobe br_netfilter\n\n# 设置内核参数\n# 使用EOF方式写入IP转发配置文件\ncat <<EOF > /etc/sysctl.d/99-kubernetes-ipforward.conf\nnet.ipv4.ip_forward = 1\nEOF\n\n# 设置其他Kubernetes所需内核参数\ncat <<EOF > /etc/sysctl.d/k8s.conf\nnet.bridge.bridge-nf-call-iptables = 1\nnet.bridge.bridge-nf-call-ip6tables = 1\nEOF\n\n# 应用内核参数\nsudo sysctl --system'
+        description: '禁用swap、配置时间同步、关闭防火墙等'
       },
       {
         name: '安装容器运行时',
-        description: '安装containerd容器运行时',
-        script: '# 安装containerd\nsudo dnf install -y containerd.io'
+        description: '安装containerd容器运行时'
       },
       {
         name: '配置容器运行时',
-        description: '配置containerd并启动服务',
-        script: '# 配置containerd\nsudo mkdir -p /etc/containerd\nsudo containerd config default > /etc/containerd/config.toml\nsudo sed -i \'s/SystemdCgroup = false/SystemdCgroup = true/g\' /etc/containerd/config.toml\n\n# 启动前先停止可能运行的containerd进程\necho "停止可能运行的containerd进程..."\nsudo pkill -f containerd || true\nsleep 2\n\n# 清理旧的containerd socket和状态文件\necho "清理旧的containerd socket和状态文件..."\nsudo rm -f /run/containerd/containerd.sock\nsudo rm -rf /var/run/containerd\nsudo mkdir -p /var/run/containerd\n\n# 启动并启用containerd服务\necho "启动containerd服务..."\nsudo systemctl daemon-reload\nsudo systemctl restart containerd\nsudo systemctl enable containerd\n\n# 等待containerd启动，增加等待时间\necho "等待containerd启动..."\nsleep 10\n\n# 检查containerd状态\necho "=== 检查containerd状态 ==="\nif command -v systemctl &> /dev/null; then\n    systemctl_status=$(sudo systemctl is-active containerd)\n    echo "containerd服务状态: $systemctl_status"\n    \n    # 显示containerd服务详细状态\n    echo "containerd服务详细状态:"\n    sudo systemctl status containerd --no-pager\nfi\n\n# 检查containerd socket是否存在\necho "=== 检查containerd socket ==="\ncri_socket="/run/containerd/containerd.sock"\nif [ -S "$cri_socket" ]; then\n    echo "CRI socket $cri_socket 存在"\n    # 测试socket连接\n    echo "测试containerd连接..."\n    if command -v ctr &> /dev/null; then\n        ctr version\n    fi\nelse\n    echo "警告: CRI socket $cri_socket 不存在，检查containerd日志..."\n    sudo journalctl -u containerd --no-pager -n 30\n    \n    # 尝试手动启动containerd\n    echo "尝试手动启动containerd..."\n    containerd --version\n    containerd &\n    sleep 5\n    \n    # 再次检查socket\n    if [ -S "$cri_socket" ]; then\n        echo "手动启动成功，CRI socket $cri_socket 现在存在"\n    else\n        echo "手动启动失败，CRI socket $cri_socket 仍然不存在"\n    fi\nfi'
+        description: '配置containerd并启动服务'
       },
       {
         name: '添加Kubernetes仓库',
-        description: '添加官方Kubernetes仓库',
-        script: '# 添加Kubernetes仓库\n# 清理旧的Kubernetes仓库配置\nsudo rm -f /etc/yum.repos.d/kubernetes.repo\nsudo rm -f /etc/yum.repos.d/packages.cloud.google.com_yum_repos_kubernetes-el7-x86_64.repo\n\n# 添加新的Kubernetes仓库\nsudo cat <<EOF > /etc/yum.repos.d/kubernetes.repo\n[kubernetes]\nname=Kubernetes\nbaseurl=https://pkgs.k8s.io/core:/stable:/v1.28/rpm/\nenabled=1\ngpgcheck=1\ngpgkey=https://pkgs.k8s.io/core:/stable:/v1.28/rpm/repodata/repomd.xml.key\nexclude=kubelet kubeadm kubectl\nEOF\n\n# 更新仓库缓存\nsudo dnf makecache'
+        description: '添加官方Kubernetes仓库'
       },
       {
         name: '安装Kubernetes组件',
-        description: '安装kubelet、kubeadm和kubectl',
-        script: '# 安装Kubernetes组件\nsudo dnf install -y kubelet${version} kubeadm${version} kubectl${version} --disableexcludes=kubernetes\n\n# 启动kubelet\nsudo systemctl enable --now kubelet'
+        description: '安装kubelet、kubeadm和kubectl'
       },
       {
         name: '初始化Kubernetes集群',
-        description: '执行kubeadm init初始化Master节点',
-        script: '# 初始化Kubernetes集群\n# 执行kubeadm init\necho "=== 执行kubeadm init ==="\nsudo kubeadm init --pod-network-cidr=10.244.0.0/16 --upload-certs\n\n# 检查kubeadm init是否成功\nif [ $? -eq 0 ]; then\n    echo "=== kubeadm init 成功 ==="\n    \n    # 配置kubectl\necho "=== 配置kubectl ==="\nmkdir -p $HOME/.kube\n    \n    # 检查admin.conf是否存在\n    if [ -f /etc/kubernetes/admin.conf ]; then\n        echo "✓ 找到admin.conf文件，正在配置kubectl..."\n        sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config\n        sudo chown $(id -u):$(id -g) $HOME/.kube/config\n        echo "✓ kubectl配置成功"\n    else\n        echo "✗ 未找到admin.conf文件，可能初始化过程中出现问题"\n    fi\n    \n    # 安装CNI网络插件（使用Flannel）\n    if [ -f $HOME/.kube/config ]; then\n        echo "=== 安装Flannel网络插件 ==="\n        kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml\n    else\n        echo "✗ 无法安装CNI插件，kubectl配置失败"\n    fi\nelse\n    echo "✗ kubeadm init 失败"\n    # 显示更多错误信息\n    echo "=== 显示kubeadm日志 ==="\n    sudo journalctl -u kubelet --no-pager -n 50\nfi'
+        description: '执行kubeadm init初始化Master节点'
+      },
+      {
+        name: '生成Worker节点加入命令',
+        description: '在Master节点上生成kubeadm join命令'
+      },
+      {
+        name: 'Worker节点加入集群',
+        description: '执行kubeadm join将Worker节点加入集群'
       }
     ]
   }
 }
 
-// 部署流程数据
-const processData = ref(defaultProcessData)
-
-// 监听Kubernetes版本变化，自动更新所有脚本中的仓库URL
-watch(selectedKubernetesVersion, (newVersion) => {
-  // 为所有发行版本更新脚本中的仓库URL
-  systems.value.forEach(distro => {
-    // 获取当前选中的源
-    const selectedSourceId = selectedSources.value[distro]
-    const sources = deploymentSources.value[distro]
-    if (sources) {
-      const source = sources.find(s => s.id === selectedSourceId)
-      if (source) {
-        updateScriptRepositoryURL(distro, source.url)
+// 从localStorage加载processData，如果无效则使用默认数据
+const loadProcessDataFromStorage = () => {
+  const storedData = loadFromLocalStorage('processData', null)
+  if (storedData && typeof storedData === 'object' && Object.keys(storedData).length > 0) {
+    // 验证数据结构
+    for (const system of systems.value) {
+      if (!storedData[system] || !storedData[system].steps) {
+        storedData[system] = defaultProcessData[system]
       }
     }
-  })
-  
-  // 保存选中的Kubernetes版本到本地存储
-  saveToLocalStorage('selectedKubernetesVersion', newVersion)
-})
+    return storedData
+  }
+  return defaultProcessData
+}
+
+// 初始化processData
+const processData = ref(loadProcessDataFromStorage())
 
 // 计算属性：当前激活的系统流程
 const currentProcess = computed(() => {
   // 添加默认值，确保始终返回一个有效的对象
-  return processData.value[activeSystem.value] || {
+  const systemProcess = processData.value[activeSystem.value]
+  if (systemProcess) {
+    return {
+      ...systemProcess,
+      steps: systemProcess.steps || []
+    }
+  }
+  return {
     name: '默认部署流程',
     steps: []
   }
 })
 
-// 部署源管理方法
-
-const switchSource = (source, distro) => {
-  // 保存选中的源到本地存储
-  saveToLocalStorage('selectedSources', selectedSources.value)
+// 编辑脚本
+const editScript = (step, index) => {
+  currentEditingStepIndex.value = index
+  currentEditingStep.value = step
+  editingScript.value = step.script || ''
+  showEditScriptDialog.value = true
 }
 
-const applySource = () => {
-  const sources = deploymentSources.value[activeDistro]
-  if (!sources) {
-    console.error(`No deployment sources found for distro: ${activeDistro}`)
-    return
-  }
-  
-  const source = sources.find(s => s.id === selectedSources.value[activeDistro])
-  if (!source) {
-    console.error(`No source found with id: ${selectedSources.value[activeDistro]} for distro: ${activeDistro}`)
-    return
-  }
-  
-  // 更新对应发行版本的部署脚本中的仓库URL
-  updateScriptRepositoryURL(activeDistro, source.url)
-  
-  alert(`已应用${activeDistro.value}部署源: ${source.name}，脚本中的仓库URL已自动更新`)
-}
-
-// 更新脚本中的仓库URL
-const updateScriptRepositoryURL = (distro, sourceUrl) => {
-  const scripts = processData.value[distro].steps
-  const version = selectedKubernetesVersion.value
-  
-  for (let i = 0; i < scripts.length; i++) {
-    let script = scripts[i].script
-    
-    // 检测是否是阿里云源
-    const isAliyunSource = sourceUrl.includes('aliyun.com')
-    
-    // 输出调试信息
-    console.log(`Updating script for ${distro}, isAliyunSource: ${isAliyunSource}, sourceUrl: ${sourceUrl}`)
-    console.log(`Script name: ${scripts[i].name}`)
-    
-    // 直接替换脚本内容，不使用复杂的正则表达式
-    if (distro === 'centos' || distro === 'rocky' || distro === 'almalinux') {
-      // 更新RPM格式的仓库URL (CentOS/RHEL/Rocky/AlmaLinux)
-      if (isAliyunSource) {
-        // 阿里云新版格式: https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.28/rpm/
-        const aliyunBaseUrl = `${sourceUrl}core/stable/${version}/rpm/`
-        console.log(`Aliyun base URL: ${aliyunBaseUrl}`)
-        
-        // 直接替换整个仓库配置块，确保所有URL都正确
-        const aliyunRepoConfig = `[kubernetes]\nname=Kubernetes\nbaseurl=${aliyunBaseUrl}\nenabled=1\ngpgcheck=1\ngpgkey=${aliyunBaseUrl}repodata/repomd.xml.key\nexclude=kubelet kubeadm kubectl`
-        
-        // 使用简单的正则表达式匹配仓库配置块
-        script = script.replace(/\[kubernetes\][\s\S]*?exclude=kubelet kubeadm kubectl/g, aliyunRepoConfig)
-      } else {
-        // 官方源格式: https://pkgs.k8s.io/core:/stable:/v1.28/rpm/
-        const officialBaseUrl = `${sourceUrl}core:/stable:/${version}/rpm/`
-        console.log(`Official base URL: ${officialBaseUrl}`)
-        
-        // 直接替换整个仓库配置块
-        const officialRepoConfig = `[kubernetes]\nname=Kubernetes\nbaseurl=${officialBaseUrl}\nenabled=1\ngpgcheck=1\ngpgkey=${officialBaseUrl}repodata/repomd.xml.key\nexclude=kubelet kubeadm kubectl`
-        
-        script = script.replace(/\[kubernetes\][\s\S]*?exclude=kubelet kubeadm kubectl/g, officialRepoConfig)
-      }
-    } else if (distro === 'ubuntu' || distro === 'debian') {
-      // 更新Debian格式的仓库URL (Ubuntu/Debian)
-      if (isAliyunSource) {
-        // 阿里云新版格式: https://mirrors.aliyun.com/kubernetes-new/core/stable/v1.28/deb/
-        const aliyunDebUrl = `${sourceUrl}core/stable/${version}/deb/`
-        console.log(`Aliyun deb URL: ${aliyunDebUrl}`)
-        
-        // 替换Release.key URL
-        script = script.replace(/https:\/\/[^\/]+\/[^\/]+\/deb\/Release.key/g, `${aliyunDebUrl}Release.key`)
-        // 替换deb仓库URL
-        script = script.replace(/https:\/\/[^\/]+\/[^\/]+\/deb\//g, aliyunDebUrl)
-      } else {
-        // 官方源格式: https://pkgs.k8s.io/core:/stable:/v1.28/deb/
-        const officialDebUrl = `${sourceUrl}core:/stable:/${version}/deb/`
-        console.log(`Official deb URL: ${officialDebUrl}`)
-        
-        // 替换Release.key URL
-        script = script.replace(/https:\/\/[^\/]+\/[^\/]+\/deb\/Release.key/g, `${officialDebUrl}Release.key`)
-        // 替换deb仓库URL
-        script = script.replace(/https:\/\/[^\/]+\/[^\/]+\/deb\//g, officialDebUrl)
-      }
-    }
-    
-    // 替换脚本中的版本占位符为实际选中的Kubernetes版本
-    script = script.replace(/\${version}/g, version)
-    
-    console.log(`Updated script: ${script.substring(0, 300)}...`)
-    
-    scripts[i].script = script
-  }
-  
-  // 保存到本地存储
-  saveToLocalStorage('processData', processData.value)
-  
-  // 保存到后端
-  saveScriptsToBackend()
-};
-
-const applySourceToAll = () => {
-  const sources = deploymentSources.value[activeDistro]
-  if (!sources) {
-    console.error(`No deployment sources found for distro: ${activeDistro}`)
-    return
-  }
-  
-  const source = sources.find(s => s.id === selectedSources.value[activeDistro])
-  if (!source) {
-    console.error(`No source found with id: ${selectedSources.value[activeDistro]} for distro: ${activeDistro}`)
-    return
-  }
-  
-  // 为所有发行版本应用相同的源配置
-  systems.value.forEach(distro => {
-    const distroSources = deploymentSources.value[distro]
-    if (distroSources) {
-      // 检查该发行版本是否已有同名源
-      const existingSourceIndex = distroSources.findIndex(s => s.name === source.name)
-      if (existingSourceIndex !== -1) {
-        // 更新现有源
-        distroSources[existingSourceIndex].url = source.url
-        selectedSources.value[distro] = distroSources[existingSourceIndex].id
-      } else {
-        // 添加新源
-        const newId = `${distro}-${distroSources.length + 1}`
-        distroSources.push({
-          id: newId,
-          name: source.name,
-          url: source.url
-        })
-        selectedSources.value[distro] = newId
-      }
-      
-      // 更新该发行版本的部署脚本中的仓库URL
-      updateScriptRepositoryURL(distro, source.url)
-    }
-  })
-  
-  alert(`已将部署源: ${source.name} 应用到所有发行版本，所有脚本中的仓库URL已自动更新`)
-}
-
-// 从后端加载部署流程脚本
-const loadScriptsFromBackend = async () => {
-  try {
-    const response = await axios.get(`${API_BASE_URL}/deployment-process/scripts`)
-    const scripts = response.data.scripts
-    
-    // 将后端脚本映射到processData
-    for (const system in scripts) {
-      if (processData.value[system]) {
-        processData.value[system].steps.forEach((step, index) => {
-          // 根据步骤名称和系统类型查找对应的脚本
-          const scriptKey = `${system}_${step.name.toLowerCase().replace(/\s+/g, '_')}`
-          if (scripts[scriptKey]) {
-            step.script = scripts[scriptKey]
-          }
-        })
-      }
-    }
-  } catch (error) {
-    // 后端不可用，使用本地默认脚本
-  }
-}
-
-// 保存脚本到后端（修改为可选，后端不可用时跳过）
-const saveScriptsToBackend = async () => {
-  try {
-    // 将processData转换为后端需要的格式
-    const scriptsToSave = {}
-    
-    for (const system in processData.value) {
-      processData.value[system].steps.forEach(step => {
-        const scriptKey = `${system}_${step.name.toLowerCase().replace(/\s+/g, '_')}`
-        scriptsToSave[scriptKey] = step.script
-      })
-    }
-    
-    await axios.post(`${API_BASE_URL}/deployment-process/scripts`, scriptsToSave)
-    return true
-  } catch (error) {
-    // 后端不可用，跳过保存
-    return false
-  }
-}
-
-// 脚本编辑方法
-const editScript = (index) => {
-  if (currentProcess.value) {
-    currentEditingStepIndex.value = index
-    currentEditingStep.value = currentProcess.value.steps[index]
-    editingScript.value = currentProcess.value.steps[index].script
-    showEditScriptDialog.value = true
-  }
-}
-
+// 关闭脚本编辑对话框
 const closeEditScriptDialog = () => {
   showEditScriptDialog.value = false
   currentEditingStepIndex.value = -1
@@ -705,338 +494,605 @@ const closeEditScriptDialog = () => {
   editingScript.value = ''
 }
 
-const saveScript = async () => {
-  if (activeSystem.value && currentEditingStepIndex.value !== -1) {
-    // 直接修改processData对象，确保Vue能检测到变化
+// 保存脚本
+const saveScript = () => {
+  if (currentEditingStepIndex.value >= 0 && currentEditingStep.value) {
+    // 更新当前步骤的脚本
     processData.value[activeSystem.value].steps[currentEditingStepIndex.value].script = editingScript.value
     
-    // 保存到后端
-    const success = await saveScriptsToBackend()
+    // 保存到localStorage
+    saveToLocalStorage('processData', processData.value)
     
+    // 显示成功消息
+    emit('showMessage', { text: '脚本保存成功!', type: 'success' })
+    
+    // 关闭对话框
     closeEditScriptDialog()
-    if (success) {
-      alert('脚本已保存')
-    }
   }
 }
 
-// 组件挂载时加载脚本
-onMounted(() => {
-  loadScriptsFromBackend()
+// 恢复默认脚本
+const restoreDefaultScript = async () => {
+  if (!currentEditingStep.value) return
+  
+  try {
+    // 根据步骤名称确定对应的脚本名称
+    let scriptName = ''
+    switch (currentEditingStep.value.name) {
+      case '系统准备':
+        scriptName = 'system_prep'
+        break
+      case '安装容器运行时':
+        scriptName = 'containerd_install'
+        break
+      case '配置容器运行时':
+        scriptName = 'containerd_config'
+        break
+      case '添加Kubernetes仓库':
+      case '安装Kubernetes组件':
+        scriptName = 'k8s_components'
+        break
+      case '初始化Kubernetes集群':
+        scriptName = 'k8s_init'
+        break
+      case '生成Worker节点加入命令':
+        scriptName = 'k8s_init' // 使用相同的脚本，因为join命令是在master初始化后生成的
+        break
+      case 'Worker节点加入集群':
+        scriptName = 'k8s_join'
+        break
+      default:
+        scriptName = 'system_prep'
+    }
+    
+    // 调用API获取默认脚本
+    const response = await apiClient.get(`/deployment-process/scripts/${scriptName}/default`)
+    
+    if (response.data.status === 'success') {
+      // 更新编辑框中的脚本内容
+      editingScript.value = response.data.scriptContent
+      
+      // 显示成功消息
+      emit('showMessage', { text: '脚本已恢复为默认值!', type: 'success' })
+    } else {
+      throw new Error(response.data.message || '恢复默认脚本失败')
+    }
+  } catch (error) {
+    console.error('恢复默认脚本失败:', error)
+    emit('showMessage', { text: `恢复默认脚本失败: ${error.message}`, type: 'error' })
+  }
+}
+
+// API配置
+const apiClient = axios.create({
+  baseURL: 'http://localhost:8080',
+  timeout: 600000 // 10分钟超时
+})
+
+// 同步状态变量
+const isSyncing = ref(false)
+const syncResult = ref(null)
+
+// 重置所有脚本为后端默认脚本
+const resetScriptsToDefault = async () => {
+  if (isSyncing.value) return
+  
+  if (!confirm('确定要将所有脚本重置为后端的默认脚本吗？\n这将覆盖当前所有自定义脚本。')) {
+    return
+  }
+  
+  isSyncing.value = true
+  syncResult.value = null
+  
+  try {
+    const response = await apiClient.post('/deployment-process/scripts/reset')
+    
+    if (response.data.status === 'scripts reset to default') {
+      // 重置成功后，从后端重新加载脚本
+      await loadDefaultScripts()
+      
+      syncResult.value = {
+        success: true,
+        message: `成功重置 ${response.data.scriptsCount} 个脚本为默认值`,
+        time: new Date().toLocaleString('zh-CN')
+      }
+      
+      emit('showMessage', { text: syncResult.value.message, type: 'success' })
+    } else {
+      throw new Error(response.data.error || '重置失败')
+    }
+  } catch (error) {
+    console.error('重置脚本失败:', error)
+    syncResult.value = {
+      success: false,
+      message: `重置失败: ${error.message || '未知错误'}`,
+      time: new Date().toLocaleString('zh-CN')
+    }
+    emit('showMessage', { text: syncResult.value.message, type: 'error' })
+  } finally {
+    isSyncing.value = false
+  }
+}
+
+// 将当前脚本同步到后端
+const syncScriptsToBackend = async () => {
+  if (isSyncing.value) return
+  
+  if (!confirm('确定要将当前脚本同步到后端吗？\n这将更新后端存储的脚本。')) {
+    return
+  }
+  
+  isSyncing.value = true
+  syncResult.value = null
+  
+  try {
+    // 收集所有脚本，按脚本名称组织
+    const scriptsToSync = {}
+    
+    // 遍历所有系统的步骤，提取脚本内容
+    for (const system of systems.value) {
+      if (processData.value[system] && processData.value[system].steps) {
+        processData.value[system].steps.forEach(step => {
+          // 根据步骤名称确定脚本名称
+          let scriptName = ''
+          switch (step.name) {
+            case '系统准备':
+              scriptName = 'system_prep'
+              break
+            case '安装容器运行时':
+              scriptName = 'containerd_install'
+              break
+            case '配置容器运行时':
+              scriptName = 'containerd_config'
+              break
+            case '添加Kubernetes仓库':
+            case '安装Kubernetes组件':
+              scriptName = 'k8s_components'
+              break
+            case '初始化Kubernetes集群':
+            case '生成Worker节点加入命令':
+              scriptName = 'k8s_init'
+              break
+            case 'Worker节点加入集群':
+              scriptName = 'k8s_join'
+              break
+            default:
+              return // 跳过未知步骤
+          }
+          
+          // 只同步有脚本内容的步骤
+          if (step.script) {
+            scriptsToSync[scriptName] = step.script
+          }
+        })
+      }
+    }
+    
+    // 调用API保存脚本
+    const response = await apiClient.post('/deployment-process/scripts', scriptsToSync)
+    
+    if (response.data.status === 'scripts saved successfully') {
+      syncResult.value = {
+        success: true,
+        message: `成功同步 ${Object.keys(scriptsToSync).length} 个脚本到后端`,
+        time: new Date().toLocaleString('zh-CN')
+      }
+      
+      emit('showMessage', { text: syncResult.value.message, type: 'success' })
+    } else {
+      throw new Error(response.data.message || '同步失败')
+    }
+  } catch (error) {
+    console.error('同步脚本到后端失败:', error)
+    syncResult.value = {
+      success: false,
+      message: `同步失败: ${error.message || '未知错误'}`,
+      time: new Date().toLocaleString('zh-CN')
+    }
+    emit('showMessage', { text: syncResult.value.message, type: 'error' })
+  } finally {
+    isSyncing.value = false
+  }
+}
+
+// 从后端获取所有默认脚本并填充到步骤中
+const loadDefaultScripts = async () => {
+  try {
+    // 调用API获取所有默认脚本
+    const response = await apiClient.get('/deployment-process/scripts')
+    const allScripts = response.data.scripts
+    
+    // 遍历所有系统的步骤，填充对应脚本
+    for (const system of systems.value) {
+      if (processData.value[system] && processData.value[system].steps) {
+        processData.value[system].steps.forEach(step => {
+          // 根据步骤名称确定脚本名称
+          let scriptName = ''
+          switch (step.name) {
+            case '系统准备':
+              scriptName = 'system_prep'
+              break
+            case '安装容器运行时':
+              scriptName = 'containerd_install'
+              break
+            case '配置容器运行时':
+              scriptName = 'containerd_config'
+              break
+            case '添加Kubernetes仓库':
+            case '安装Kubernetes组件':
+              scriptName = 'k8s_components'
+              break
+            case '初始化Kubernetes集群':
+            case '生成Worker节点加入命令':
+              scriptName = 'k8s_init'
+              break
+            case 'Worker节点加入集群':
+              scriptName = 'k8s_join'
+              break
+            default:
+              scriptName = ''
+          }
+          
+          // 如果找到对应的脚本且步骤还没有脚本内容，则填充
+          if (scriptName && allScripts[scriptName] && !step.script) {
+            step.script = allScripts[scriptName]
+          }
+        })
+      }
+    }
+    
+    // 保存到localStorage
+    saveToLocalStorage('processData', processData.value)
+  } catch (error) {
+    console.error('加载默认脚本失败:', error)
+    // 如果加载失败，不影响页面显示，继续使用现有数据
+  }
+}
+
+// 页面加载时初始化数据
+onMounted(async () => {
+  // 确保processData是有效的
+  if (!processData.value || typeof processData.value !== 'object') {
+    processData.value = defaultProcessData
+  }
+  
+  // 确保activeSystem是有效的
+  if (!activeSystem.value || !systems.value.includes(activeSystem.value)) {
+    activeSystem.value = systems.value[0] || 'centos'
+  }
+  
+  // 确保每个系统都有有效的流程数据
+  for (const system of systems.value) {
+    if (!processData.value[system] || !processData.value[system].steps) {
+      processData.value[system] = defaultProcessData[system]
+    }
+  }
+  
+  // 从后端加载默认脚本并填充到步骤中
+  await loadDefaultScripts()
 })
 </script>
 
 <style scoped>
+/* 基础样式重置和布局 */
 .deployment-manager {
-  max-width: 1200px;
-  margin: 0 auto;
-}
-
-h2 {
-  font-size: 1.8rem;
-  margin-bottom: 20px;
-  color: var(--text-primary);
-}
-
-h3 {
-  font-size: 1.4rem;
-  margin: 20px 0 15px 0;
-  color: var(--text-primary);
-}
-
-/* 部署源切换区域 */
-.source-switcher {
-  background-color: var(--bg-card);
-  border-radius: var(--radius-md);
   padding: 20px;
-  margin-bottom: 30px;
-  box-shadow: var(--shadow-sm);
-}
-
-.source-options {
+  background: var(--bg-primary);
+  flex: 1;
+  overflow-x: hidden;
+  overflow-y: auto;
+  height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 15px;
-  margin-bottom: 20px;
 }
 
-.source-option {
+/* 确保主容器可以滚动 */
+.deployment-manager::-webkit-scrollbar {
+  width: 8px;
+}
+
+.deployment-manager::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+}
+
+.deployment-manager::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+  transition: all 0.3s ease;
+}
+
+.deployment-manager::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+  transform: scale(1.1);
+}
+
+/* 页面标题 */
+.deployment-manager h2 {
+  font-size: 1.8rem;
+  margin-bottom: 28px;
+  color: var(--text-primary);
+  font-weight: 700;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px;
-  background-color: var(--bg-secondary);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-color);
-  cursor: pointer;
-  transition: all 0.3s ease;
-}
-
-.source-option:hover {
-  border-color: var(--primary-color);
-  background-color: rgba(52, 152, 219, 0.05);
-}
-
-.source-option input[type="radio"] {
-  width: 18px;
-  height: 18px;
-  accent-color: var(--primary-color);
-}
-
-.source-label {
-  font-weight: 600;
-  color: var(--text-primary);
-  min-width: 150px;
-}
-
-.source-url {
-  font-size: 0.9rem;
-  color: var(--text-secondary);
-  flex: 1;
-  word-break: break-all;
-}
-
-/* 系统标签页 */
-.system-tabs {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 20px;
-  overflow-x: auto;
-  padding-bottom: 10px;
-}
-
-.tab-btn {
-  padding: 10px 20px;
-  background-color: var(--bg-secondary);
-  border: 1px solid var(--border-color);
+  padding-bottom: 12px;
+  border-bottom: 2px solid var(--primary-color);
+  background: linear-gradient(135deg, rgba(52, 152, 219, 0.1), transparent);
+  padding: 16px 20px;
   border-radius: var(--radius-md);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all 0.3s ease;
-  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(52, 152, 219, 0.15);
 }
 
-.tab-btn:hover {
-  border-color: var(--primary-color);
+.deployment-manager h2::before {
+  content: '🔧';
+  font-size: 1.9rem;
+  text-shadow: 0 2px 4px rgba(52, 152, 219, 0.3);
+}
+
+/* 区块样式 */
+.source-switcher, .process-list {
+  background: linear-gradient(135deg, var(--bg-secondary) 0%, rgba(255, 255, 255, 0.05) 100%);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  margin-bottom: 24px;
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border-color);
+  transition: all 0.3s ease;
+}
+
+.source-switcher:hover, .process-list:hover {
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-1px);
+}
+
+/* 简化版本样式 */
+.source-switcher.simple, .process-list.simple {
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.source-options.simple {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.source-option.simple {
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  background: rgba(52, 152, 219, 0.1);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+}
+
+.source-option.simple .source-label {
+  font-weight: 600;
+  margin-bottom: 4px;
   color: var(--primary-color);
 }
 
-.tab-btn.active {
-  background-color: var(--primary-color);
-  color: white;
-  border-color: var(--primary-color);
-}
-
-/* 流程步骤 */
-.process-steps {
-  background-color: var(--bg-card);
-  border-radius: var(--radius-md);
-  padding: 20px;
-  box-shadow: var(--shadow-sm);
-}
-
-.process-step {
-  margin-bottom: 25px;
-  padding-bottom: 20px;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.process-step:last-child {
-  margin-bottom: 0;
-  padding-bottom: 0;
-  border-bottom: none;
-}
-
-.step-header {
-  display: flex;
-  gap: 15px;
-  margin-bottom: 15px;
-  align-items: flex-start;
-}
-
-.step-number {
-  width: 30px;
-  height: 30px;
-  background-color: var(--primary-color);
-  color: white;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 600;
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-
-.step-info h4 {
-  font-size: 1.2rem;
-  margin: 0 0 5px 0;
-  color: var(--text-primary);
-}
-
-.step-description {
-  font-size: 0.95rem;
+.source-option.simple .source-url {
+  font-size: 0.85rem;
   color: var(--text-secondary);
-  margin: 0;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  word-break: break-all;
 }
 
-.step-content {
-  margin-left: 45px;
+.system-tabs.simple {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
 }
 
-.step-script {
-  background-color: var(--bg-secondary);
-  border-radius: var(--radius-sm);
-  padding: 15px;
+.process-steps.simple {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.process-step.simple {
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+  padding: 12px;
   border: 1px solid var(--border-color);
 }
 
+.process-step.simple .step-header {
+  flex-direction: row;
+  gap: 12px;
+}
+
+.process-step.simple .step-info {
+  flex: 1;
+}
+
+.step-script {
+  margin-top: 16px;
+  padding: 16px;
+  background-color: var(--bg-input);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transition: all 0.3s ease;
+}
+
+.step-script:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  border-color: var(--primary-color);
+  transform: translateY(-1px);
+}
+
 .step-script h5 {
+  margin: 0 0 12px 0;
   font-size: 1rem;
-  margin: 0 0 10px 0;
   color: var(--text-primary);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.step-script h5::before {
+  content: '📝';
+  font-size: 1.1rem;
 }
 
 .step-script pre {
   margin: 0;
-  font-family: 'Courier New', Courier, monospace;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
   font-size: 0.9rem;
-  line-height: 1.5;
-  overflow-x: auto;
-  color: var(--text-primary);
-  background-color: var(--bg-primary);
-  padding: 10px;
-  border-radius: var(--radius-sm);
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  background-color: var(--bg-secondary);
   border: 1px solid var(--border-color);
-}
-
-/* 按钮样式 */
-.btn {
-  padding: 10px 20px;
-  border: none;
-  border-radius: var(--radius-md);
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  font-size: 0.95rem;
-}
-
-.btn-primary {
-  background-color: var(--primary-color);
-  color: white;
-}
-
-.btn-primary:hover {
-  background-color: var(--primary-dark);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-md);
-}
-
-.btn-small {
-  padding: 6px 12px;
-  font-size: 0.85rem;
-}
-
-.btn-danger {
-  background-color: var(--error-color);
-  color: white;
-}
-
-.btn-danger:hover {
-  background-color: #c0392b;
-}
-
-/* 对话框样式 */
-.dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background-color: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.dialog-content {
-  background-color: var(--bg-card);
-  border-radius: var(--radius-md);
-  padding: 25px;
-  box-shadow: var(--shadow-lg);
-  width: 90%;
-  max-width: 600px;
-  max-height: 90vh;
+  padding: 16px;
+  overflow-x: auto;
+  max-height: 250px;
   overflow-y: auto;
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
+  transition: all 0.3s ease;
 }
 
-.dialog-large {
-  max-width: 800px;
+.step-script pre:hover {
+  background-color: rgba(52, 152, 219, 0.05);
+  border-color: var(--primary-color);
 }
 
-.dialog-header {
+/* 区块标题 */
+.section-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 20px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--border-color);
+  flex-wrap: wrap;
+  gap: 16px;
 }
 
-.dialog-header h4 {
+.section-header h3 {
+  font-size: 1.1rem;
   margin: 0;
-  font-size: 1.3rem;
   color: var(--text-primary);
-}
-
-.dialog-close {
-  background: none;
-  border: none;
-  font-size: 1.5rem;
-  cursor: pointer;
-  color: var(--text-secondary);
-  transition: color 0.3s ease;
-}
-
-.dialog-close:hover {
-  color: var(--text-primary);
-}
-
-.dialog-body {
-  margin-bottom: 25px;
-}
-
-.dialog-footer {
+  font-weight: 600;
   display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  padding-top: 20px;
-  border-top: 1px solid var(--border-color);
+  align-items: center;
+  gap: 8px;
 }
 
-/* 表单样式 */
-.form-group {
-  margin-bottom: 20px;
+.section-header h3::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary-color);
+  box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
 }
 
-.form-group label {
-  display: block;
-  margin-bottom: 8px;
+/* 头部操作按钮容器 */
+.header-actions {
+  display: flex;
+  gap: 8px;
+  margin-right: auto;
+}
+
+/* 同步按钮样式 */
+.btn-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
+}
+
+.btn-sync:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.6);
+}
+
+.btn-sync:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* 同步结果提示 */
+.sync-result {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.sync-result.sync-success {
+  background: rgba(46, 204, 113, 0.1);
+  border-color: var(--secondary-color);
+}
+
+.sync-result.sync-failed {
+  background: rgba(231, 76, 60, 0.1);
+  border-color: var(--error-color);
+}
+
+.sync-result-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sync-icon {
+  font-size: 1.2rem;
+}
+
+.sync-message {
   font-weight: 600;
   color: var(--text-primary);
-  font-size: 0.95rem;
+  flex: 1;
 }
 
+.sync-time {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* 表单元素 */
 .form-input {
-  width: 100%;
-  padding: 12px;
+  padding: 10px 14px;
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background-color: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  background: var(--bg-input);
   color: var(--text-primary);
-  font-size: 0.95rem;
   transition: all 0.3s ease;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .form-input:focus {
@@ -1045,17 +1101,358 @@ h3 {
   box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
 }
 
+/* 按钮样式 */
+.btn {
+  padding: 10px 20px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  position: relative;
+  overflow: hidden;
+}
+
+.btn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+  transition: left 0.5s ease;
+}
+
+.btn:hover::before {
+  left: 100%;
+}
+
+.btn:hover {
+  border-color: var(--primary-color);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--primary-color), var(--primary-color-light));
+  color: white;
+  border-color: var(--primary-color);
+}
+
+.btn-primary:hover {
+  background: linear-gradient(135deg, var(--primary-color-dark), var(--primary-color));
+  border-color: var(--primary-color-dark);
+}
+
+.btn-secondary {
+  background: linear-gradient(135deg, var(--bg-secondary), var(--bg-card));
+  color: var(--text-primary);
+  border-color: var(--border-color);
+}
+
+.btn-secondary:hover {
+  background: linear-gradient(135deg, var(--bg-card), var(--bg-input));
+  border-color: var(--primary-color);
+}
+
+.btn-small {
+  padding: 6px 12px;
+  font-size: 0.8rem;
+}
+
+/* 编辑脚本按钮样式 */
+.edit-script-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
+  border: none;
+  color: white;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 8px rgba(52, 152, 219, 0.3);
+}
+
+.edit-script-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(52, 152, 219, 0.4);
+  background: linear-gradient(135deg, var(--primary-dark), var(--primary-color));
+}
+
+.edit-script-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 6px rgba(52, 152, 219, 0.3);
+}
+
+.btn-icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+/* 标签页样式 */
+.system-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.tab-btn {
+  padding: 8px 16px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-size: 0.9rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.tab-btn::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 2px;
+  background: var(--primary-color);
+  transition: all 0.3s ease;
+}
+
+.tab-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--primary-color);
+}
+
+.tab-btn.active {
+  color: var(--primary-color);
+  border-color: var(--primary-color);
+  background: rgba(52, 152, 219, 0.1);
+}
+
+.tab-btn.active::after {
+  width: 100%;
+}
+
+/* 步骤样式 */
+.process-step {
+  margin-bottom: 20px;
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+  padding: 20px;
+  border: 1px solid var(--border-color);
+  transition: all 0.3s ease;
+}
+
+.process-step:hover {
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+.step-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+  position: relative;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, var(--bg-secondary), transparent);
+  border-radius: var(--radius-md);
+  border-left: 4px solid var(--primary-color);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  transition: all 0.3s ease;
+}
+
+.step-header:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  transform: translateX(4px);
+}
+
+.step-number {
+  width: 40px;
+  height: 40px;
+  background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 1.2rem;
+  flex-shrink: 0;
+  box-shadow: 0 4px 12px rgba(52, 152, 219, 0.3);
+  transition: all 0.3s ease;
+  border: 2px solid var(--bg-secondary);
+}
+
+.step-number:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 16px rgba(52, 152, 219, 0.4);
+}
+
+.step-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.step-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.step-title-row h4 {
+  margin: 0;
+  font-size: 1.2rem;
+  color: var(--text-primary);
+  font-weight: 600;
+  transition: all 0.3s ease;
+  line-height: 1.3;
+}
+
+.step-title-row h4:hover {
+  color: var(--primary-color);
+}
+
+.step-description {
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.6;
+  background: rgba(52, 152, 219, 0.05);
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  border-left: 3px solid var(--primary-color);
+  transition: all 0.3s ease;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+.step-description:hover {
+  background: rgba(52, 152, 219, 0.1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+/* 脚本编辑对话框 */
+.dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.3s ease;
+}
+
+.dialog-content {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  box-shadow: var(--shadow-xl);
+  border: 1px solid var(--border-color);
+  max-width: 90vw;
+  max-height: 90vh;
+  overflow-y: auto;
+  animation: slideUp 0.3s ease;
+}
+
+.dialog-large {
+  max-width: 80vw;
+  width: 800px;
+}
+
+.dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.dialog-header h4 {
+  margin: 0;
+  font-size: 1.2rem;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.dialog-close {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  transition: all 0.3s ease;
+}
+
+.dialog-close:hover {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  transform: rotate(90deg);
+}
+
+.dialog-body {
+  margin-bottom: 20px;
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
 .form-textarea {
   width: 100%;
+  min-height: 200px;
   padding: 12px;
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background-color: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  background: var(--bg-input);
   color: var(--text-primary);
-  font-size: 0.95rem;
-  font-family: 'Courier New', Courier, monospace;
   resize: vertical;
   transition: all 0.3s ease;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  line-height: 1.6;
 }
 
 .form-textarea:focus {
@@ -1064,90 +1461,77 @@ h3 {
   box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
 }
 
-/* 源管理样式 */
-.section-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 15px;
-}
-
-.source-actions {
-  display: flex;
-  gap: 8px;
-  margin-left: auto;
-}
-
-.source-actions-bottom {
-  margin-top: 20px;
-  text-align: right;
-  display: flex;
-  gap: 10px;
-  justify-content: flex-end;
-}
-
-.source-distro-selector {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.source-distro-selector label {
-  margin: 0;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.source-distro-selector .form-input {
-  min-width: 150px;
-}
-
-.btn-secondary {
-  background-color: var(--bg-secondary);
-  color: var(--text-primary);
+/* 空状态样式 */
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border-color);
 }
 
-.btn-secondary:hover {
-  background-color: var(--bg-primary);
-  border-color: var(--primary-color);
-  color: var(--primary-color);
+.empty-state p {
+  margin: 8px 0;
+  font-size: 0.95rem;
 }
 
-.source-option {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px;
-  background-color: var(--bg-secondary);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-color);
-  cursor: pointer;
-  transition: all 0.3s ease;
-  flex-wrap: wrap;
+/* 动画效果 */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
-.source-option:hover {
-  border-color: var(--primary-color);
-  background-color: rgba(52, 152, 219, 0.05);
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-.step-title-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  width: 100%;
-  margin-bottom: 5px;
-}
-
-.step-title-row h4 {
-  margin: 0;
-}
-
-.script-header {
-  margin-bottom: 10px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .deployment-manager {
+    padding: 12px;
+  }
+  
+  .section-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  
+  .system-tabs {
+    width: 100%;
+  }
+  
+  .tab-btn {
+    flex: 1;
+    min-width: 80px;
+    text-align: center;
+  }
+  
+  .step-title-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  
+  .dialog-content {
+    padding: 16px;
+    margin: 12px;
+  }
+  
+  .dialog-large {
+    width: calc(100vw - 24px);
+  }
 }
 </style>

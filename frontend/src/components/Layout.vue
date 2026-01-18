@@ -81,26 +81,26 @@
       </nav>
     </aside>
     
+    <!-- 顶部工具栏 -->
+    <header class="top-bar">
+      <div class="top-bar-left">
+        <h1 class="page-title">{{ getPageTitle() }}</h1>
+      </div>
+      <div class="top-bar-right">
+        <!-- 主题切换按钮 -->
+        <button class="theme-toggle" @click="toggleTheme" title="切换主题">
+          <span v-if="isLightTheme">🌙</span>
+          <span v-else>☀️</span>
+        </button>
+        <div class="system-status">
+          <div class="status-indicator" :class="{ 'online': systemOnline, 'offline': !systemOnline }"></div>
+          <span class="status-text">{{ systemOnline ? '系统在线' : '系统离线' }}</span>
+        </div>
+      </div>
+    </header>
+    
     <!-- 主内容区域 -->
     <main class="main-content">
-      <!-- 顶部工具栏 -->
-      <header class="top-bar">
-        <div class="top-bar-left">
-          <h1 class="page-title">{{ getPageTitle() }}</h1>
-        </div>
-        <div class="top-bar-right">
-          <!-- 主题切换按钮 -->
-          <button class="theme-toggle" @click="toggleTheme" title="切换主题">
-            <span v-if="isLightTheme">🌙</span>
-            <span v-else>☀️</span>
-          </button>
-          <div class="system-status">
-            <div class="status-indicator" :class="{ 'online': systemOnline, 'offline': !systemOnline }"></div>
-            <span class="status-text">{{ systemOnline ? '系统在线' : '系统离线' }}</span>
-          </div>
-        </div>
-      </header>
-      
       <!-- 内容区域 -->
       <div class="content">
         <slot></slot>
@@ -353,10 +353,12 @@ const closeMessage = () => {
   /* 为固定顶栏留出空间 */
   margin-top: 80px;
   /* 确保主内容区域占满剩余高度 */
-  min-height: calc(100vh - 80px);
+  height: calc(100vh - 80px);
   /* 使用深色背景 */
   background-color: var(--bg-primary);
   transition: background-color 0.3s ease;
+  /* 确保主内容区域不会溢出 */
+  overflow: hidden;
 }
 
 /* 顶部工具栏 */
@@ -425,6 +427,8 @@ const closeMessage = () => {
   /* 使用深色背景 */
   background-color: var(--bg-primary);
   transition: background-color 0.3s ease;
+  /* 添加最小高度，确保内容区域始终有足够的高度 */
+  min-height: 100%;
 }
 
 /* 确保所有元素的宽度计算一致 */

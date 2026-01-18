@@ -200,8 +200,8 @@ import axios from 'axios'
 
 // API 配置
 const apiClient = axios.create({
-  baseURL: 'http://localhost:8080',
-  timeout: 300000 // 5分钟超时，适应Kubernetes组件安装的耗时过程
+  baseURL: getApiBaseUrl(),
+  timeout: 600000 // 10分钟超时，适应Kubernetes组件安装的耗时过程
 })
 
 // 状态变量
@@ -225,7 +225,15 @@ const config = ref({
   etcdDataDir: '/var/lib/etcd' // 生产环境：etcd数据目录
 })
 
-// 定义组件的事件
+// 定义组件的属性和事件
+const props = defineProps({
+  availableVersions: { type: Array, default: () => [] },
+  kubeadmVersion: { type: String, default: '' },
+  nodes: { type: Array, default: () => [] },
+  systemOnline: { type: Boolean, default: true },
+  apiStatus: { type: String, default: 'online' }
+})
+
 const emit = defineEmits(['showMessage'])
 
 // 初始化集群
@@ -237,10 +245,15 @@ const initCluster = async () => {
   try {
     // 获取主节点ID（这里假设第一个节点是主节点）
     const nodesResponse = await apiClient.get('/nodes')
-    const masterNodes = nodesResponse.data.filter(node => node.nodeType === 'master' || node.nodeType === 'Master')
+    const masterNodes = nodesResponse.data.filter(node => node && (node.nodeType === 'master' || node.nodeType === 'Master'))
     
     if (masterNodes.length === 0) {
       throw new Error('没有找到主节点，请先添加主节点并设置为主节点类型')
+    }
+    
+    // 确保masterNodes[0]是有效的对象
+    if (!masterNodes[0] || !masterNodes[0].id) {
+      throw new Error('找到主节点但缺少ID信息')
     }
     
     const masterNodeId = masterNodes[0].id

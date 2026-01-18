@@ -1,16 +1,43 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"k8s-installer/kubeadm"
 	"k8s-installer/log"
 	"k8s-installer/node"
 	"k8s-installer/script"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
+
+// maskPassword 掩码密码，只显示前2个字符和后2个字符
+func maskPassword(password string) string {
+	if password == "" {
+		return "<空>"
+	}
+	if len(password) <= 4 {
+		return strings.Repeat("*", len(password))
+	}
+	return password[:2] + strings.Repeat("*", len(password)-4) + password[len(password)-2:]
+}
+
+// maskPrivateKey 掩码私钥，只显示前20个字符和后20个字符
+func maskPrivateKey(privateKey string) string {
+	if privateKey == "" {
+		return "<空>"
+	}
+	if len(privateKey) <= 40 {
+		return strings.Repeat("*", len(privateKey))
+	}
+	return privateKey[:20] + "...(省略)..." + privateKey[len(privateKey)-20:]
+}
 
 func main() {
 	r := gin.Default()
@@ -29,11 +56,18 @@ func main() {
 		c.Next()
 	})
 
+	// 初始化版本管理器，每3小时同步一次
+	versionManager := kubeadm.NewVersionManager(3 * time.Hour)
+	// 启动版本同步服务
+	versionManager.Start()
+
 	// 初始化节点管理器（SQLite实现，使用纯Go驱动，支持持久化存储，不需要CGO）
 	nodeManager, err := node.NewSqliteNodeManager("k8s_installer.db")
 	if err != nil {
 		panic(fmt.Sprintf("Failed to initialize SQLite node manager: %v", err))
 	}
+
+	// 获取日志管理器 - 广播回调由SSE端点动态设置
 
 	// 初始化脚本管理器
 	scriptManager, err := script.NewScriptManager("./scripts")
@@ -50,7 +84,7 @@ func main() {
 		panic(fmt.Sprintf("Failed to set script manager for node manager: %v", err))
 	}
 
-	// API routes
+	// API routes// 健康检查路由
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status": "ok",
@@ -108,38 +142,8 @@ func main() {
 
 	// Kubeadm 包管理路由
 	r.GET("/kubeadm/packages", func(c *gin.Context) {
-		// 返回可用的Kubeadm版本列表
-		// 包含最近几个稳定版本
-		versions := []string{
-			"v1.30.0",
-			"v1.29.4",
-			"v1.29.3",
-			"v1.29.2",
-			"v1.29.1",
-			"v1.29.0",
-			"v1.28.8",
-			"v1.28.7",
-			"v1.28.6",
-			"v1.28.5",
-			"v1.28.4",
-			"v1.28.3",
-			"v1.28.2",
-			"v1.28.1",
-			"v1.28.0",
-			"v1.27.12",
-			"v1.27.11",
-			"v1.27.10",
-			"v1.27.9",
-			"v1.27.8",
-			"v1.27.7",
-			"v1.27.6",
-			"v1.27.5",
-			"v1.27.4",
-			"v1.27.3",
-			"v1.27.2",
-			"v1.27.1",
-			"v1.27.0",
-		}
+		// 从版本管理器获取可用的Kubernetes版本列表
+		versions := versionManager.GetAvailableVersions()
 		c.JSON(http.StatusOK, gin.H{
 			"versions": versions,
 		})
@@ -354,6 +358,7 @@ func main() {
 		var req struct {
 			MasterNodeID string                `json:"masterNodeId" binding:"required"`
 			Config       kubeadm.KubeadmConfig `json:"config" binding:"required"`
+			SkipSteps    []string              `json:"skipSteps" binding:"omitempty"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -380,6 +385,14 @@ func main() {
 			PrivateKey: masterNode.PrivateKey,
 		}
 
+		// 添加调试信息，查看节点的SSH认证信息
+		fmt.Printf("调试信息: 节点 %s 的SSH配置:\n", masterNode.Name)
+		fmt.Printf("  Host: %s\n", masterNode.IP)
+		fmt.Printf("  Port: %d\n", masterNode.Port)
+		fmt.Printf("  Username: %s\n", masterNode.Username)
+		fmt.Printf("  Password: %s\n", maskPassword(masterNode.Password))
+		fmt.Printf("  PrivateKey: %s\n", maskPrivateKey(masterNode.PrivateKey))
+
 		// 记录初始化开始日志
 		initLog := log.LogEntry{
 			ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
@@ -395,8 +408,9 @@ func main() {
 		nodeManager.CreateLog(initLog)
 
 		fmt.Printf("开始初始化master节点: %s\n", masterNode.Name)
+		fmt.Printf("跳过的步骤: %v\n", req.SkipSteps)
 
-		result, err := kubeadm.InitMaster(sshConfig, req.Config)
+		result, err := kubeadm.InitMaster(sshConfig, req.Config, req.SkipSteps)
 		if err != nil {
 			// 记录初始化失败日志
 			initLog.Output = fmt.Sprintf("初始化失败: %v\n输出: %s", err, result)
@@ -691,10 +705,14 @@ func main() {
 	// K8s Deployment routes
 	r.POST("/k8s/deploy", func(c *gin.Context) {
 		var req struct {
-			KubeVersion string   `json:"kubeVersion" binding:"required"`
-			Arch        string   `json:"arch" binding:"required"`
-			Distro      string   `json:"distro" binding:"required"`
-			NodeIds     []string `json:"nodeIds" binding:"required"`
+			KubeVersion          string   `json:"kubeVersion" binding:"required"`
+			Arch                 string   `json:"arch" binding:"required"`
+			Distro               string   `json:"distro" binding:"required"`
+			NodeIds              []string `json:"nodeIds" binding:"required"`
+			SkipSteps            []string `json:"skipSteps" binding:"omitempty"`
+			JoinToken            string   `json:"joinToken" binding:"omitempty"`
+			CACertHash           string   `json:"caCertHash" binding:"omitempty"`
+			ControlPlaneEndpoint string   `json:"controlPlaneEndpoint" binding:"omitempty"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -748,8 +766,52 @@ func main() {
 
 		fmt.Printf("节点列表: %v\n", nodeNames)
 
-		// 调用DeployK8sCluster函数进行部署，传递scriptManager
-		result, err := kubeadm.DeployK8sCluster(nodes, req.KubeVersion, req.Arch, req.Distro, scriptManager)
+		// 创建一个上下文，支持取消部署
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// 设置join token相关环境变量，供DeployK8sCluster函数使用
+		if req.JoinToken != "" && req.CACertHash != "" && req.ControlPlaneEndpoint != "" {
+			// 构建完整的join命令
+			joinCmd := fmt.Sprintf("kubeadm join %s --token %s --discovery-token-ca-cert-hash %s", req.ControlPlaneEndpoint, req.JoinToken, req.CACertHash)
+			os.Setenv("KUBEADM_JOIN_COMMAND", joinCmd)
+			fmt.Printf("设置KUBEADM_JOIN_COMMAND环境变量: %s\n", joinCmd)
+		} else if req.JoinToken != "" {
+			// 如果只提供了部分信息，分别设置环境变量
+			os.Setenv("KUBEADM_TOKEN", req.JoinToken)
+			os.Setenv("KUBEADM_CA_CERT_HASH", req.CACertHash)
+			os.Setenv("KUBEADM_CONTROL_PLANE_ENDPOINT", req.ControlPlaneEndpoint)
+			fmt.Printf("设置join token相关环境变量: Token=%s, CACertHash=%s, ControlPlaneEndpoint=%s\n", req.JoinToken, req.CACertHash, req.ControlPlaneEndpoint)
+		}
+
+		// 调用DeployK8sCluster函数进行部署，传递scriptManager和skipSteps
+		// 实时日志回调函数，支持按节点记录日志
+		logCallback := func(logMsg, nodeID, nodeName string) {
+			// 确定日志的节点ID和节点名
+			logNodeID := nodeID
+			logNodeName := nodeName
+
+			// 如果是集群级别的日志，使用原始日志回调中的固定值
+			if logNodeID == "cluster" {
+				logNodeName = "Kubernetes Cluster"
+			}
+
+			// 创建日志条目
+			logEntry := log.LogEntry{
+				ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
+				NodeID:    logNodeID,
+				NodeName:  logNodeName,
+				Operation: "DeployK8sCluster",
+				Command:   fmt.Sprintf("部署Kubernetes集群，版本: %s，架构: %s，发行版: %s", req.KubeVersion, req.Arch, req.Distro),
+				Output:    logMsg,
+				Status:    "running",
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+			nodeManager.CreateLog(logEntry)
+		}
+
+		result, err := kubeadm.DeployK8sCluster(ctx, nodes, req.KubeVersion, req.Arch, req.Distro, scriptManager, req.SkipSteps, logCallback)
 		if err != nil {
 			// 记录部署失败日志
 			deployLog.Output = fmt.Sprintf("部署失败: %v\n详细错误: %s\n", err, result)
@@ -793,7 +855,13 @@ func main() {
 			})
 			return
 		}
-		c.JSON(http.StatusOK, nodes)
+		// 确保返回的是数组类型，而不是null
+		// 显式创建一个切片，确保Gin将其序列化为数组
+		responseNodes := []node.Node{}
+		if nodes != nil {
+			responseNodes = nodes
+		}
+		c.JSON(http.StatusOK, responseNodes)
 	})
 
 	// 获取单个节点
@@ -1435,6 +1503,46 @@ func main() {
 		})
 	})
 
+	// 实时日志流API
+	r.GET("/logs/stream", func(c *gin.Context) {
+		// 设置响应头，支持SSE
+		c.Writer.Header().Set("Content-Type", "text/event-stream")
+		c.Writer.Header().Set("Cache-Control", "no-cache")
+		c.Writer.Header().Set("Connection", "keep-alive")
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+
+		// 创建一个通道来接收日志
+		logChan := make(chan log.LogEntry)
+
+		// 设置广播回调
+		if sqliteLogManager, ok := nodeManager.GetLogManager().(interface {
+			SetBroadcastCallback(callback func(log.LogEntry))
+		}); ok {
+			sqliteLogManager.SetBroadcastCallback(func(logEntry log.LogEntry) {
+				logChan <- logEntry
+			})
+		}
+
+		// 客户端断开连接时关闭通道
+		c.Stream(func(w io.Writer) bool {
+			select {
+			case logEntry := <-logChan:
+				// 将日志格式化为SSE格式
+				logJSON, err := json.Marshal(logEntry)
+				if err != nil {
+					return true
+				}
+				fmt.Fprintf(w, "data: %s\n\n", logJSON)
+				c.Writer.(http.Flusher).Flush()
+				return true
+			case <-c.Request.Context().Done():
+				// 客户端断开连接
+				close(logChan)
+				return false
+			}
+		})
+	})
+
 	// 系统脚本管理API端点
 	// 获取系统脚本
 	r.GET("/scripts", func(c *gin.Context) {
@@ -1501,6 +1609,51 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{
 			"status": "scripts saved successfully",
 		})
+	})
+
+	// 重置部署流程脚本到默认脚本
+	r.POST("/deployment-process/scripts/reset", func(c *gin.Context) {
+		// 获取默认脚本
+		defaultScripts := scriptManager.GetDefaultScripts()
+
+		// 更新脚本管理器
+		scriptManager.UpdateScripts(defaultScripts)
+
+		// 保存到文件
+		if err := scriptManager.SaveScripts(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": err.Error(),
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":       "scripts reset to default",
+			"message":      "所有脚本已重置为默认脚本",
+			"scriptsCount": len(defaultScripts),
+		})
+	})
+
+	// 获取单个脚本的默认值
+	r.GET("/deployment-process/scripts/:name/default", func(c *gin.Context) {
+		scriptName := c.Param("name")
+		// 获取所有默认脚本
+		defaultScripts := scriptManager.GetDefaultScripts()
+		// 查找指定脚本
+		if scriptContent, exists := defaultScripts[scriptName]; exists {
+			c.JSON(http.StatusOK, gin.H{
+				"status":        "success",
+				"message":       "获取默认脚本成功",
+				"scriptName":    scriptName,
+				"scriptContent": scriptContent,
+			})
+		} else {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error":      "script not found",
+				"message":    "未找到指定的默认脚本",
+				"scriptName": scriptName,
+			})
+		}
 	})
 
 	// Start server

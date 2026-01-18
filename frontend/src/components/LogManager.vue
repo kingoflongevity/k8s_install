@@ -4,45 +4,61 @@
     <div class="logs-section">
       <h3>部署日志</h3>
       <div class="logs-controls">
+        <div class="sse-status">
+          <span class="sse-status-indicator" :class="sseStatus"></span>
+          <span class="sse-status-text">{{ sseStatusText }}</span>
+        </div>
         <button class="btn btn-secondary" @click="clearLogs">清除日志</button>
       </div>
       
       <div class="logs-container">
-        <div v-if="logs.length > 0" class="logs-list">
+        <div class="logs-list">
+          <div class="log-statistics">
+            <p>总日志数量: {{ (logs || []).length }}</p>
+            <p>有ID的日志数量: {{ (logs || []).filter(log => log && log.id).length }}</p>
+          </div>
           <div 
-            v-for="log in logs" 
-            :key="log.id" 
+            v-for="(log, index) in logs" 
+            :key="index" 
             class="log-item"
-            :class="{'log-success': log.status === 'success', 'log-failed': log.status === 'failed'}"
+            :class="{'log-success': log && log.status === 'success', 'log-failed': log && log.status === 'failed', 'log-no-id': !log || !log.id}"
           >
             <div class="log-header">
               <div class="log-meta">
-                <span class="log-node">{{ log.nodeName }}</span>
-                <span class="log-operation">{{ log.operation }}</span>
-                <span class="log-status" :class="log.status">{{ log.status }}</span>
-                <span class="log-time">{{ formatDate(log.createdAt) }}</span>
+                <span class="log-node">{{ log ? log.nodeName : '无节点名称' }}</span>
+                <span class="log-operation">{{ log ? log.operation : '无操作' }}</span>
+                <span class="log-status" :class="log ? log.status : ''">{{ log ? log.status : '无状态' }}</span>
+                <span class="log-time">{{ log ? formatDate(log.createdAt) : '无时间' }}</span>
               </div>
               <button 
+                v-if="log && log.id" 
                 class="log-toggle" 
                 @click="toggleLogDetail(log.id)"
               >
-                {{ expandedLogs.includes(log.id) ? '收起' : '展开' }}
+                {{ log && expandedLogs.includes(log.id) ? '收起' : '展开' }}
               </button>
             </div>
             <div class="log-content">
-              <div class="log-command">{{ log.command }}</div>
+              <div class="log-command">{{ log ? log.command : '无命令' }}</div>
               <div 
-                v-if="expandedLogs.includes(log.id)" 
+                v-if="log && expandedLogs.includes(log.id)" 
                 class="log-output"
               >
                 <pre>{{ log.output }}</pre>
               </div>
+              <div v-if="!log || !log.id" class="log-error">
+                <p>日志缺少ID: {{ JSON.stringify(log) }}</p>
+              </div>
             </div>
           </div>
         </div>
-        <div v-else class="empty-logs">
+        <div v-if="(logs || []).length === 0" class="empty-logs">
           <div class="empty-icon"></div>
           <p>暂无部署日志</p>
+          <div class="sse-connection-info" v-if="sseStatus !== 'connected'">
+            <p class="sse-connection-message">{{ sseStatusText }}</p>
+            <button class="btn btn-secondary" @click="initSSE">重新连接</button>
+          </div>
         </div>
       </div>
     </div>
@@ -50,7 +66,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, onActivated, onDeactivated, watch } from 'vue'
+import { ref, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
 import axios from 'axios'
 
 // API 配置
@@ -59,19 +75,34 @@ const apiClient = axios.create({
   timeout: 300000 // 5分钟超时，适应Kubernetes组件安装的耗时过程
 })
 
+// SSE配置
+let eventSource = null
+let sseReconnectTimer = null
+
 // 状态变量
 const logs = ref([])
 const expandedLogs = ref([])
+const sseStatus = ref('disconnected') // connected, connecting, disconnected, error
+const sseStatusText = ref('未连接')
 let logInterval = null
 
-// 定义组件的事件
+// 定义组件的属性和事件
+const props = defineProps({
+  availableVersions: { type: Array, default: () => [] },
+  kubeadmVersion: { type: String, default: '' },
+  nodes: { type: Array, default: () => [] },
+  systemOnline: { type: Boolean, default: true },
+  apiStatus: { type: String, default: 'online' }
+})
+
 const emit = defineEmits(['showMessage'])
 
 // 获取日志
 const getLogs = async () => {
   try {
     const response = await apiClient.get('/logs')
-    logs.value = response.data.logs || []
+    const allLogs = response.data.logs || []
+    logs.value = allLogs
   } catch (error) {
     // 静默处理日志API错误，不显示用户错误信息
     logs.value = []
@@ -117,26 +148,177 @@ const formatDate = (dateString) => {
   })
 }
 
+// 初始化SSE连接
+const initSSE = () => {
+  // 如果已经有连接且状态为OPEN，直接返回
+  if (eventSource && eventSource.readyState === EventSource.OPEN) {
+    sseStatus.value = 'connected'
+    sseStatusText.value = '已连接'
+    return
+  }
+  
+  // 关闭现有连接
+  if (eventSource) {
+    try {
+      eventSource.close()
+    } catch (error) {
+      // 静默处理关闭连接错误
+    }
+    eventSource = null
+  }
+  
+  // 更新连接状态为连接中
+  sseStatus.value = 'connecting'
+  sseStatusText.value = '连接中...'
+  
+  try {
+    // 动态构建SSE URL，确保与API使用相同的主机和端口
+    const apiBaseUrl = apiClient.defaults.baseURL
+    const sseUrl = `${apiBaseUrl}/logs/stream`
+    
+    eventSource = new EventSource(sseUrl, { withCredentials: false })
+    
+    // 连接打开时的处理
+    eventSource.onopen = () => {
+      sseStatus.value = 'connected'
+      sseStatusText.value = '已连接'
+    }
+    
+    // 接收消息时的处理
+    eventSource.onmessage = (event) => {
+      try {
+        const logEntry = JSON.parse(event.data)
+        // 检查日志是否已存在，避免重复
+        const exists = logs.value.some(log => log.id === logEntry.id)
+        if (!exists) {
+          // 将新日志添加到数组开头
+          logs.value.unshift(logEntry)
+        }
+      } catch (error) {
+        console.error('解析SSE日志失败:', error)
+        // 添加错误日志到界面
+        logs.value.unshift({
+          id: `error-${Date.now()}`,
+          nodeName: '系统',
+          operation: 'SSEError',
+          command: '解析日志消息',
+          output: `解析实时日志失败: ${error.message}`,
+          status: 'failed',
+          createdAt: new Date(),
+          updatedAt: new Date()
+        })
+      }
+    }
+    
+    // 连接关闭时的处理
+    eventSource.onclose = () => {
+      console.log('SSE连接已关闭')
+      sseStatus.value = 'disconnected'
+      sseStatusText.value = '已断开连接，正在重试...'
+      // 尝试重新连接
+      reconnectSSE()
+    }
+    
+    // 连接错误时的处理
+    eventSource.onerror = (error) => {
+      console.error('SSE连接错误:', error)
+      sseStatus.value = 'error'
+      sseStatusText.value = `连接错误: ${error.message || '未知错误'}`
+      // 添加错误日志到界面
+      logs.value.unshift({
+        id: `error-${Date.now()}`,
+        nodeName: '系统',
+        operation: 'SSEError',
+        command: '建立连接',
+        output: `实时日志连接错误: ${error.message || '未知错误'}`,
+        status: 'failed',
+        createdAt: new Date(),
+        updatedAt: new Date()
+      })
+      eventSource.close()
+    }
+  } catch (error) {
+    console.error('创建SSE连接失败:', error)
+    sseStatus.value = 'error'
+    sseStatusText.value = `连接错误: ${error.message || '未知错误'}`
+    // 添加错误日志到界面
+    logs.value.unshift({
+      id: `error-${Date.now()}`,
+      nodeName: '系统',
+      operation: 'SSEError',
+      command: '建立连接',
+      output: `创建实时日志连接失败: ${error.message}`,
+      status: 'failed',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    })
+    reconnectSSE()
+  }
+}
+
+// 尝试重新连接SSE
+const reconnectSSE = () => {
+  // 清除现有定时器
+  if (sseReconnectTimer) {
+    clearTimeout(sseReconnectTimer)
+  }
+  
+  // 5秒后重新连接
+  sseReconnectTimer = setTimeout(() => {
+    console.log('尝试重新连接SSE...')
+    initSSE()
+  }, 5000)
+}
+
 // 页面加载时获取日志
 onMounted(() => {
   getLogs()
+  // 初始化SSE连接
+  initSSE()
 })
 
 // 组件激活时启动日志刷新定时器
 onActivated(() => {
   getLogs()
-  
-  // 每隔1秒刷新一次日志，实现实时效果
-  logInterval = setInterval(() => {
-    getLogs()
-  }, 1000)
+  // 确保SSE连接已建立
+  if (!eventSource || eventSource.readyState !== EventSource.OPEN) {
+    initSSE()
+  }
 })
 
-// 组件停用时清除日志刷新定时器
+// 组件停用时清除日志刷新定时器和SSE连接
 onDeactivated(() => {
   if (logInterval) {
     clearInterval(logInterval)
     logInterval = null
+  }
+  // 关闭SSE连接
+  if (eventSource) {
+    eventSource.close()
+    eventSource = null
+  }
+  // 清除重新连接定时器
+  if (sseReconnectTimer) {
+    clearTimeout(sseReconnectTimer)
+    sseReconnectTimer = null
+  }
+})
+
+// 组件卸载时清理资源
+onUnmounted(() => {
+  if (logInterval) {
+    clearInterval(logInterval)
+    logInterval = null
+  }
+  // 关闭SSE连接
+  if (eventSource) {
+    eventSource.close()
+    eventSource = null
+  }
+  // 清除重新连接定时器
+  if (sseReconnectTimer) {
+    clearTimeout(sseReconnectTimer)
+    sseReconnectTimer = null
   }
 })
 </script>
@@ -161,8 +343,96 @@ onDeactivated(() => {
 /* 日志控制按钮 */
 .logs-controls {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
   margin-bottom: 20px;
+}
+
+/* SSE状态指示器 */
+.sse-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+}
+
+.sse-status-indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background-color: var(--text-muted);
+  transition: all 0.3s ease;
+}
+
+.sse-status-indicator.connected {
+  background-color: var(--secondary-color);
+  box-shadow: 0 0 10px rgba(46, 204, 113, 0.5);
+}
+
+.sse-status-indicator.connecting {
+  background-color: var(--primary-color);
+  animation: pulse 1.5s infinite;
+}
+
+.sse-status-indicator.disconnected {
+  background-color: var(--warning-color);
+}
+
+.sse-status-indicator.error {
+  background-color: var(--error-color);
+}
+
+@keyframes pulse {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.2);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.sse-status-text {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+/* SSE连接信息 */
+.sse-connection-info {
+  margin-top: 20px;
+  padding: 15px;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+}
+
+.sse-connection-message {
+  color: var(--text-secondary);
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .logs-controls {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 10px;
+  }
+  
+  .sse-status {
+    align-self: flex-start;
+  }
 }
 
 /* 日志容器 */

@@ -1,5 +1,6 @@
 <template>
   <div class="node-manager">
+    <h2>节点管理</h2>
     <!-- 节点管理区域 -->
     <div class="nodes-section">
       <div class="nodes-controls">
@@ -7,10 +8,10 @@
           {{ showAddNodeForm ? '取消添加' : '添加节点' }}
         </button>
         <button 
-          class="btn btn-secondary" 
-          @click="configureSSHPasswdless"
-          :disabled="nodes.length < 2"
-        >
+            class="btn btn-secondary" 
+            @click="configureSSHPasswdless"
+            :disabled="localNodes.length < 2"
+          >
           配置节点SSH免密互通
         </button>
       </div>
@@ -83,7 +84,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="node in nodes" :key="node.id">
+            <tr v-for="node in localNodes" :key="node.id">
               <td>{{ node.name }}</td>
               <td>{{ node.ip }}</td>
               <td><span class="node-type-badge" :class="node.nodeType">{{ node.nodeType }}</span></td>
@@ -126,7 +127,7 @@
             </tr>
           </tbody>
         </table>
-        <div v-if="nodes.length === 0" class="empty-state">
+        <div v-if="(localNodes || []).length === 0" class="empty-state">
           <div class="empty-icon"></div>
           <p>暂无节点，请添加节点</p>
         </div>
@@ -146,7 +147,7 @@ const apiClient = axios.create({
 })
 
 // 本地状态
-const nodes = ref([])
+const localNodes = ref([])
 const showAddNodeForm = ref(false)
 const editMode = ref(false)
 const editingNodeId = ref('')
@@ -160,24 +161,32 @@ const newNode = ref({
   nodeType: 'worker'
 })
 
-// 定义组件的事件
+// 定义组件的属性和事件
+const props = defineProps({
+  availableVersions: { type: Array, default: () => [] },
+  kubeadmVersion: { type: String, default: '' },
+  nodes: { type: Array, default: () => [] },
+  systemOnline: { type: Boolean, default: true },
+  apiStatus: { type: String, default: 'online' }
+})
+
 const emit = defineEmits(['showMessage'])
 
 // 获取节点列表
 const getNodes = async () => {
   try {
     const response = await apiClient.get('/nodes')
-    // 确保nodes.value始终是数组
+    // 确保localNodes.value始终是数组
     if (Array.isArray(response.data)) {
-      nodes.value = response.data
+      localNodes.value = response.data
     } else {
-      nodes.value = []
+      localNodes.value = []
       emit('showMessage', { text: 'API返回的数据格式错误，期望数组类型', type: 'warning' })
     }
   } catch (error) {
     emit('showMessage', { text: '获取节点列表失败: ' + error.message, type: 'error' })
-    // 确保nodes.value始终是数组
-    nodes.value = []
+    // 确保localNodes.value始终是数组
+    localNodes.value = []
   }
 }
 
@@ -189,15 +198,15 @@ const addNode = async () => {
       // 编辑现有节点
       response = await apiClient.put(`/nodes/${editingNodeId.value}`, newNode.value)
       // 更新本地节点列表
-      const index = nodes.value.findIndex(n => n.id === editingNodeId.value)
+      const index = localNodes.value.findIndex(n => n.id === editingNodeId.value)
       if (index !== -1) {
-        nodes.value[index] = response.data
+        localNodes.value[index] = response.data
       }
       emit('showMessage', { text: '节点更新成功!', type: 'success' })
     } else {
       // 添加新节点
       response = await apiClient.post('/nodes', newNode.value)
-      nodes.value.push(response.data)
+      localNodes.value.push(response.data)
       emit('showMessage', { text: '节点添加成功!', type: 'success' })
     }
     showAddNodeForm.value = false
@@ -236,7 +245,7 @@ const deleteNode = async (nodeId) => {
   try {
     await apiClient.delete(`/nodes/${nodeId}`)
     // 从本地列表中移除节点
-    nodes.value = nodes.value.filter(n => n.id !== nodeId)
+    localNodes.value = localNodes.value.filter(n => n.id !== nodeId)
     emit('showMessage', { text: '节点删除成功!', type: 'success' })
   } catch (error) {
     emit('showMessage', { text: '删除节点失败: ' + (error.response?.data?.error || error.message), type: 'error' })
@@ -316,7 +325,7 @@ const configureNodeSSH = async (nodeId) => {
 
 // 配置所有节点之间的SSH免密互通
 const configureSSHPasswdless = async () => {
-  if (nodes.value.length < 2) {
+  if (localNodes.value.length < 2) {
     emit('showMessage', { text: '至少需要2个节点才能配置SSH免密互通!', type: 'warning' })
     return
   }

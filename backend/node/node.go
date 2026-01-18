@@ -17,6 +17,7 @@ type Node struct {
 	NodeType         string    `json:"nodeType"`         // master 或 worker
 	Status           string    `json:"status"`           // online, offline, ready, deploying
 	ContainerRuntime string    `json:"containerRuntime"` // 容器运行时类型：containerd, cri-o
+	OS               string    `json:"os"`               // 操作系统类型：ubuntu, centos, debian, rocky等
 	CreatedAt        time.Time `json:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt"`
 }

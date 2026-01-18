@@ -34,9 +34,13 @@ type LogManager interface {
 	ClearLogs() error
 }
 
+// BroadcastCallback 日志广播回调函数类型
+type BroadcastCallback func(LogEntry)
+
 // SqliteLogManager SQLite日志管理器
 type SqliteLogManager struct {
-	DB *sql.DB
+	DB                *sql.DB
+	broadcastCallback BroadcastCallback
 }
 
 // NewSqliteLogManager 创建新的SQLite日志管理器
@@ -86,6 +90,11 @@ func NewSqliteLogManager(db *sql.DB) (*SqliteLogManager, error) {
 	}, nil
 }
 
+// SetBroadcastCallback 设置日志广播回调函数
+func (m *SqliteLogManager) SetBroadcastCallback(callback BroadcastCallback) {
+	m.broadcastCallback = callback
+}
+
 // CreateLog 创建新日志
 func (m *SqliteLogManager) CreateLog(log LogEntry) error {
 	// 确保UpdatedAt有值
@@ -113,6 +122,12 @@ func (m *SqliteLogManager) CreateLog(log LogEntry) error {
 			log.ID, log.NodeID, log.NodeName, log.Operation, log.Command, log.Output, log.Status, log.CreatedAt, log.UpdatedAt,
 		)
 	}
+
+	// 调用广播回调函数，将日志发送到SSE客户端
+	if m.broadcastCallback != nil {
+		m.broadcastCallback(log)
+	}
+
 	return err
 }
 

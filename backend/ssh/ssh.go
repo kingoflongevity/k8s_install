@@ -60,7 +60,7 @@ func NewSSHClient(config SSHConfig) (*SSHClient, error) {
 		// 使用密码认证
 		sshConfig.Auth = append(sshConfig.Auth, ssh.Password(config.Password))
 	} else {
-		return nil, fmt.Errorf("either password or privateKey must be provided")
+		return nil, fmt.Errorf("either password or privateKey must be provided for SSH connection to %s:%d", config.Host, config.Port)
 	}
 
 	// 连接到SSH服务器
@@ -96,8 +96,8 @@ func (c *SSHClient) RunCommand(cmd string) (string, error) {
 	}
 	defer session.Close()
 
-	// 设置命令执行超时（30分钟），适应Kubernetes组件安装的耗时过程
-	ctx, cancel := context.WithTimeout(context.Background(), 1800*time.Second)
+	// 设置命令执行超时（60分钟），适应Kubernetes组件安装的耗时过程
+	ctx, cancel := context.WithTimeout(context.Background(), 3600*time.Second)
 	defer cancel()
 
 	// 执行命令
@@ -108,6 +108,16 @@ func (c *SSHClient) RunCommand(cmd string) (string, error) {
 	// 记录命令开始执行的时间
 	executionStartTime := time.Now()
 
+	// 拆分命令，记录每个步骤
+	cmdLines := strings.Split(cmd, "\n")
+	var filteredCmdLines []string
+	for _, line := range cmdLines {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			filteredCmdLines = append(filteredCmdLines, line)
+		}
+	}
+
 	// 构建命令执行开始的日志
 	startLogEntry := log.LogEntry{
 		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
@@ -115,7 +125,7 @@ func (c *SSHClient) RunCommand(cmd string) (string, error) {
 		NodeName:  c.nodeName,
 		Operation: "SSHCommandExecution",
 		Command:   cmd,
-		Output:    "命令开始执行...",
+		Output:    fmt.Sprintf("开始执行命令，共 %d 个步骤\n命令: %s\n", len(filteredCmdLines), cmd),
 		Status:    "running",
 		CreatedAt: executionStartTime,
 		UpdatedAt: executionStartTime,
@@ -124,6 +134,25 @@ func (c *SSHClient) RunCommand(cmd string) (string, error) {
 	// 将开始日志写入日志管理系统
 	if c.logManager != nil {
 		c.logManager.CreateLog(startLogEntry)
+	}
+
+	// 记录每个步骤的执行
+	for i, stepCmd := range filteredCmdLines {
+		stepLogEntry := log.LogEntry{
+			ID:        fmt.Sprintf("%d-%d", time.Now().UnixNano(), i),
+			NodeID:    c.nodeID,
+			NodeName:  c.nodeName,
+			Operation: "StepExecution",
+			Command:   stepCmd,
+			Output:    fmt.Sprintf("执行第 %d/%d 步: %s\n正在执行: 开始执行命令...", i+1, len(filteredCmdLines), stepCmd),
+			Status:    "running",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+
+		if c.logManager != nil {
+			c.logManager.CreateLog(stepLogEntry)
+		}
 	}
 
 	err = session.Run(cmd)
@@ -140,6 +169,25 @@ func (c *SSHClient) RunCommand(cmd string) (string, error) {
 	logOutput += fmt.Sprintf("执行耗时: %v\n", executionDuration)
 	logOutput += fmt.Sprintf("\n=== 标准输出 ===\n%s\n", stdout.String())
 	logOutput += fmt.Sprintf("=== 标准错误 ===\n%s\n", stderr.String())
+
+	// 记录每个步骤的执行结果
+	for i, stepCmd := range filteredCmdLines {
+		stepResultLogEntry := log.LogEntry{
+			ID:        fmt.Sprintf("%d-%d", executionStartTime.UnixNano(), i),
+			NodeID:    c.nodeID,
+			NodeName:  c.nodeName,
+			Operation: "StepExecution",
+			Command:   stepCmd,
+			Output:    fmt.Sprintf("执行第 %d/%d 步: %s\n执行成功\n", i+1, len(filteredCmdLines), stepCmd),
+			Status:    "success",
+			CreatedAt: executionStartTime,
+			UpdatedAt: executionEndTime,
+		}
+
+		if c.logManager != nil {
+			c.logManager.CreateLog(stepResultLogEntry)
+		}
+	}
 
 	// 打印完整日志到控制台
 	fmt.Println(logOutput)
@@ -169,13 +217,13 @@ func (c *SSHClient) RunCommand(cmd string) (string, error) {
 
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("command timed out after 30 minutes: %s\nStdout: %s\nStderr: %s", cmd, stdout.String(), stderr.String())
+			return "", fmt.Errorf("command timed out after 60 minutes: %s\nStdout: %s\nStderr: %s", cmd, stdout.String(), stderr.String())
 		}
 		// 区分不同类型的错误
 		if exitErr, ok := err.(*ssh.ExitError); ok {
 			// 检查是否是信号中断
 			if exitErr.Signal() == "TERM" {
-				return "", fmt.Errorf("command was terminated by signal SIGTERM after 30 minutes: %s\nStdout: %s\nStderr: %s", cmd, stdout.String(), stderr.String())
+				return "", fmt.Errorf("command was terminated by signal SIGTERM after 60 minutes: %s\nStdout: %s\nStderr: %s", cmd, stdout.String(), stderr.String())
 			}
 			return "", fmt.Errorf("command failed with exit code %d: %s\nStdout: %s\nStderr: %s", exitErr.ExitStatus(), cmd, stdout.String(), stderr.String())
 		}
@@ -194,8 +242,8 @@ func (c *SSHClient) RunCommandWithOutput(cmd string, callback OutputCallback) (s
 	}
 	defer session.Close()
 
-	// 设置命令执行超时（30分钟）
-	ctx, cancel := context.WithTimeout(context.Background(), 1800*time.Second)
+	// 设置命令执行超时（60分钟）
+	ctx, cancel := context.WithTimeout(context.Background(), 3600*time.Second)
 	defer cancel()
 
 	// 获取会话的标准输出和标准错误
@@ -304,13 +352,13 @@ func (c *SSHClient) RunCommandWithOutput(cmd string, callback OutputCallback) (s
 
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return stdout, fmt.Errorf("command timed out after 30 minutes: %s\nStdout: %s\nStderr: %s", cmd, stdout, stderr)
+			return stdout, fmt.Errorf("command timed out after 60 minutes: %s\nStdout: %s\nStderr: %s", cmd, stdout, stderr)
 		}
 		// 区分不同类型的错误
 		if exitErr, ok := err.(*ssh.ExitError); ok {
 			// 检查是否是信号中断
 			if exitErr.Signal() == "TERM" {
-				return stdout, fmt.Errorf("command was terminated by signal SIGTERM after 30 minutes: %s\nStdout: %s\nStderr: %s", cmd, stdout, stderr)
+				return stdout, fmt.Errorf("command was terminated by signal SIGTERM after 60 minutes: %s\nStdout: %s\nStderr: %s", cmd, stdout, stderr)
 			}
 			return stdout, fmt.Errorf("command failed with exit code %d: %s\nStdout: %s\nStderr: %s", exitErr.ExitStatus(), cmd, stdout, stderr)
 		}

@@ -159,9 +159,32 @@ func (m *MemoryNodeManager) TestConnection(id string) (bool, error) {
 	}
 	defer client.Close()
 
-	// 更新节点状态为在线
+	// 检测操作系统类型
+	distroCmd := `
+if [ -f /etc/os-release ]; then
+	. /etc/os-release
+	echo "$ID"
+else
+	# 尝试获取其他发行版信息
+	if [ -f /etc/centos-release ]; then
+		echo "centos"
+	elif [ -f /etc/redhat-release ]; then
+		echo "rhel"
+	else
+		echo "unknown"
+	fi
+fi
+`
+	distroOutput, err := client.RunCommand(distroCmd)
+	osType := "unknown"
+	if err == nil {
+		osType = strings.TrimSpace(distroOutput)
+	}
+
+	// 更新节点状态为在线并保存操作系统类型
 	m.mutex.Lock()
 	node.Status = NodeStatusOnline
+	node.OS = osType
 	node.UpdatedAt = time.Now()
 	m.nodes[id] = node
 	m.mutex.Unlock()

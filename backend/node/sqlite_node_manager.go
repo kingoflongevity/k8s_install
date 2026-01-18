@@ -28,6 +28,11 @@ func (m *SqliteNodeManager) GetDB() interface{} {
 	return m.db
 }
 
+// GetLogManager 获取日志管理器
+func (m *SqliteNodeManager) GetLogManager() log.LogManager {
+	return m.logManager
+}
+
 // NewSqliteNodeManager 创建新的SQLite节点管理器
 func NewSqliteNodeManager(dbPath string) (*SqliteNodeManager, error) {
 	// 打开数据库连接，使用modernc.org/sqlite驱动，驱动名称为"sqlite"
@@ -48,6 +53,7 @@ func NewSqliteNodeManager(dbPath string) (*SqliteNodeManager, error) {
 		private_key TEXT,
 		node_type TEXT NOT NULL DEFAULT 'worker',
 		status TEXT NOT NULL DEFAULT 'offline',
+		os TEXT NOT NULL DEFAULT 'unknown',
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
 	);
@@ -90,7 +96,7 @@ func (m *SqliteNodeManager) GetNodes() ([]Node, error) {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
-	rows, err := m.db.Query("SELECT id, name, ip, port, username, password, private_key, node_type, status, created_at, updated_at FROM nodes")
+	rows, err := m.db.Query("SELECT id, name, ip, port, username, password, private_key, node_type, status, os, created_at, updated_at FROM nodes")
 	if err != nil {
 		return nil, fmt.Errorf("failed to query nodes: %v", err)
 	}
@@ -109,6 +115,7 @@ func (m *SqliteNodeManager) GetNodes() ([]Node, error) {
 			&node.PrivateKey,
 			&node.NodeType,
 			&node.Status,
+			&node.OS,
 			&node.CreatedAt,
 			&node.UpdatedAt,
 		); err != nil {
@@ -131,7 +138,7 @@ func (m *SqliteNodeManager) GetNode(id string) (*Node, error) {
 
 	var node Node
 	err := m.db.QueryRow(
-		"SELECT id, name, ip, port, username, password, private_key, node_type, status, created_at, updated_at FROM nodes WHERE id = ?",
+		"SELECT id, name, ip, port, username, password, private_key, node_type, status, os, created_at, updated_at FROM nodes WHERE id = ?",
 		id,
 	).Scan(
 		&node.ID,
@@ -143,6 +150,7 @@ func (m *SqliteNodeManager) GetNode(id string) (*Node, error) {
 		&node.PrivateKey,
 		&node.NodeType,
 		&node.Status,
+		&node.OS,
 		&node.CreatedAt,
 		&node.UpdatedAt,
 	)
@@ -186,9 +194,14 @@ func (m *SqliteNodeManager) CreateNode(node Node) (*Node, error) {
 
 	node.UpdatedAt = time.Now()
 
+	// 设置默认操作系统类型
+	if node.OS == "" {
+		node.OS = "unknown"
+	}
+
 	// 插入数据
 	_, err := m.db.Exec(
-		"INSERT INTO nodes (id, name, ip, port, username, password, private_key, node_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO nodes (id, name, ip, port, username, password, private_key, node_type, status, os, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		node.ID,
 		node.Name,
 		node.IP,
@@ -198,6 +211,7 @@ func (m *SqliteNodeManager) CreateNode(node Node) (*Node, error) {
 		node.PrivateKey,
 		node.NodeType,
 		node.Status,
+		node.OS,
 		node.CreatedAt,
 		node.UpdatedAt,
 	)
@@ -228,8 +242,13 @@ func (m *SqliteNodeManager) UpdateNode(id string, node Node) (*Node, error) {
 	node.ID = id
 	node.UpdatedAt = time.Now()
 
+	// 设置默认操作系统类型
+	if node.OS == "" {
+		node.OS = "unknown"
+	}
+
 	_, err = m.db.Exec(
-		"UPDATE nodes SET name = ?, ip = ?, port = ?, username = ?, password = ?, private_key = ?, node_type = ?, status = ?, updated_at = ? WHERE id = ?",
+		"UPDATE nodes SET name = ?, ip = ?, port = ?, username = ?, password = ?, private_key = ?, node_type = ?, status = ?, os = ?, updated_at = ? WHERE id = ?",
 		node.Name,
 		node.IP,
 		node.Port,
@@ -238,6 +257,7 @@ func (m *SqliteNodeManager) UpdateNode(id string, node Node) (*Node, error) {
 		node.PrivateKey,
 		node.NodeType,
 		node.Status,
+		node.OS,
 		node.UpdatedAt,
 		node.ID,
 	)
@@ -333,14 +353,45 @@ func (m *SqliteNodeManager) TestConnection(id string) (bool, error) {
 	}
 
 	fmt.Printf("✓ 命令执行成功，输出: %s\n", strings.TrimSpace(testOutput))
-	// 更新节点状态为在线
+
+	// 检测操作系统类型
+	fmt.Println("检测操作系统类型...")
+	distroCmd := `
+if [ -f /etc/os-release ]; then
+	. /etc/os-release
+	echo "$ID"
+else
+	# 尝试获取其他发行版信息
+	if [ -f /etc/centos-release ]; then
+		echo "centos"
+	elif [ -f /etc/redhat-release ]; then
+		echo "rhel"
+	else
+		echo "unknown"
+	fi
+fi
+`
+	distroOutput, err := client.RunCommand(distroCmd)
+	osType := "unknown"
+	if err == nil {
+		osType = strings.TrimSpace(distroOutput)
+	}
+	fmt.Printf("✓ 操作系统检测成功: %s\n", osType)
+
+	// 更新节点状态为在线并保存操作系统类型
 	m.mutex.Lock()
 	node.Status = NodeStatusOnline
+	node.OS = osType
 	node.UpdatedAt = time.Now()
 	m.updateNodeStatus(id, node.Status, node.UpdatedAt)
+	// 更新节点OS字段到数据库
+	_, err = m.db.Exec("UPDATE nodes SET os = ?, updated_at = ? WHERE id = ?", osType, node.UpdatedAt, id)
+	if err != nil {
+		fmt.Printf("✗ 更新节点OS信息到数据库失败: %v\n", err)
+	}
 	m.mutex.Unlock()
 
-	fmt.Printf("✓ 节点 %s 连接测试成功，状态更新为在线\n", node.Name)
+	fmt.Printf("✓ 节点 %s 连接测试成功，状态更新为在线，操作系统: %s\n", node.Name, osType)
 	return true, nil
 }
 
@@ -383,10 +434,10 @@ func (m *SqliteNodeManager) DeployNode(id string) error {
 	// 根据节点类型执行不同的部署命令
 	if node.NodeType == NodeTypeMaster {
 		// 执行主节点部署命令
-		err = m.deployMasterNode(client)
+		err = m.deployMasterNode(client, node.ID, node.Name)
 	} else {
 		// 执行工作节点部署命令
-		err = m.deployWorkerNode(client)
+		err = m.deployWorkerNode(client, node.ID, node.Name)
 	}
 
 	if err != nil {
@@ -447,7 +498,15 @@ func (m *SqliteNodeManager) ConfigureSSHSettings(id string) error {
 		return fmt.Errorf("failed to create .ssh directory: %v", err)
 	}
 
+	// 检查并删除已存在的密钥文件，避免覆盖确认提示
+	fmt.Println("  检查并删除已存在的密钥文件...")
+	_, err = client.RunCommandWithOutput("rm -f ~/.ssh/id_rsa ~/.ssh/id_rsa.pub", outputCallback)
+	if err != nil {
+		return fmt.Errorf("failed to remove existing SSH keys: %v", err)
+	}
+
 	// 生成密钥对，不使用密码
+	fmt.Println("  生成新的SSH密钥对...")
 	_, err = client.RunCommandWithOutput("ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N '' -q", outputCallback)
 	if err != nil {
 		return fmt.Errorf("failed to generate SSH key: %v", err)
@@ -507,10 +566,10 @@ func (m *SqliteNodeManager) ConfigureSSHPasswdless() error {
 		fmt.Println(line) // 实时打印到控制台
 	}
 
-	// 1. 收集所有节点的公钥
-	fmt.Println("=== 收集所有节点的公钥 ===")
-	nodePublicKeys := make(map[string]string)
+	fmt.Println("=== 开始配置所有节点之间的SSH免密互通 ===")
 
+	// 1. 确保所有节点都已配置SSH密钥
+	fmt.Println("\n=== 1. 确保所有节点都已配置SSH密钥 ===")
 	for _, node := range allNodes {
 		fmt.Printf("处理节点: %s (%s)\n", node.Name, node.IP)
 		// 创建SSH客户端
@@ -527,39 +586,59 @@ func (m *SqliteNodeManager) ConfigureSSHPasswdless() error {
 			return fmt.Errorf("failed to create SSH client for node %s: %v", node.Name, err)
 		}
 
-		// 获取公钥
-		fmt.Printf("  获取节点 %s 的公钥...\n", node.Name)
-		publicKey, err := client.RunCommandWithOutput("cat ~/.ssh/id_rsa.pub", outputCallback)
+		// 检查公钥是否存在，不存在则配置SSH设置
+		_, err = client.RunCommand("test -f ~/.ssh/id_rsa.pub")
 		if err != nil {
-			// 如果公钥不存在，先配置SSH设置
 			client.Close()
 			fmt.Printf("  节点 %s 公钥不存在，正在配置SSH设置...\n", node.Name)
 			if err := m.ConfigureSSHSettings(node.ID); err != nil {
 				return fmt.Errorf("failed to configure SSH settings for node %s: %v", node.Name, err)
 			}
+			fmt.Printf("  节点 %s SSH设置配置完成\n", node.Name)
+		} else {
+			fmt.Printf("  节点 %s 已存在SSH密钥\n", node.Name)
+		}
+		client.Close()
+	}
 
-			// 重新创建客户端并获取公钥
-			client, err = ssh.NewSSHClient(sshConfig)
-			if err != nil {
-				return fmt.Errorf("failed to re-create SSH client for node %s: %v", node.Name, err)
-			}
+	// 2. 收集所有节点的公钥
+	fmt.Println("\n=== 2. 收集所有节点的公钥 ===")
+	nodePublicKeys := make(map[string]string)
+	nodeIPMap := make(map[string]string) // 节点名称到IP的映射
 
-			publicKey, err = client.RunCommandWithOutput("cat ~/.ssh/id_rsa.pub", outputCallback)
-			if err != nil {
-				client.Close()
-				return fmt.Errorf("failed to get public key for node %s: %v", node.Name, err)
-			}
+	for _, node := range allNodes {
+		fmt.Printf("获取节点 %s (%s) 的公钥...\n", node.Name, node.IP)
+		nodeIPMap[node.Name] = node.IP
+
+		// 创建SSH客户端
+		sshConfig := ssh.SSHConfig{
+			Host:       node.IP,
+			Port:       node.Port,
+			Username:   node.Username,
+			Password:   node.Password,
+			PrivateKey: node.PrivateKey,
+		}
+
+		client, err := ssh.NewSSHClient(sshConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create SSH client for node %s: %v", node.Name, err)
+		}
+
+		// 获取公钥
+		publicKey, err := client.RunCommand("cat ~/.ssh/id_rsa.pub")
+		client.Close()
+		if err != nil {
+			return fmt.Errorf("failed to get public key for node %s: %v", node.Name, err)
 		}
 
 		nodePublicKeys[node.Name] = strings.TrimSpace(publicKey)
 		fmt.Printf("  成功获取节点 %s 的公钥\n", node.Name)
-		client.Close()
 	}
 
-	// 2. 将所有公钥分发到每个节点的authorized_keys文件中
-	fmt.Println("\n=== 将所有公钥分发到每个节点的authorized_keys文件中 ===")
+	// 3. 配置每个节点的authorized_keys文件
+	fmt.Println("\n=== 3. 配置每个节点的authorized_keys文件 ===")
 	for _, targetNode := range allNodes {
-		fmt.Printf("配置节点: %s (%s)\n", targetNode.Name, targetNode.IP)
+		fmt.Printf("\n配置节点: %s (%s)\n", targetNode.Name, targetNode.IP)
 		// 创建SSH客户端
 		sshConfig := ssh.SSHConfig{
 			Host:       targetNode.IP,
@@ -574,20 +653,30 @@ func (m *SqliteNodeManager) ConfigureSSHPasswdless() error {
 			return fmt.Errorf("failed to create SSH client for node %s: %v", targetNode.Name, err)
 		}
 
-		// 清空authorized_keys文件
-		fmt.Printf("  清空 %s 的authorized_keys文件...\n", targetNode.Name)
-		_, err = client.RunCommandWithOutput("> ~/.ssh/authorized_keys", outputCallback)
+		// 确保.ssh目录存在并设置正确权限
+		fmt.Printf("  1. 设置.ssh目录权限...\n")
+		permCmd := "mkdir -p ~/.ssh && chmod 755 ~ && chmod 700 ~/.ssh"
+		_, err = client.RunCommandWithOutput(permCmd, outputCallback)
 		if err != nil {
 			client.Close()
-			return fmt.Errorf("failed to clear authorized_keys for node %s: %v", targetNode.Name, err)
+			return fmt.Errorf("failed to set .ssh directory permissions for node %s: %v", targetNode.Name, err)
+		}
+
+		// 清空并重新创建authorized_keys文件
+		fmt.Printf("  2. 重新创建authorized_keys文件...\n")
+		_, err = client.RunCommandWithOutput("rm -f ~/.ssh/authorized_keys && touch ~/.ssh/authorized_keys", outputCallback)
+		if err != nil {
+			client.Close()
+			return fmt.Errorf("failed to recreate authorized_keys for node %s: %v", targetNode.Name, err)
 		}
 
 		// 添加所有节点的公钥到authorized_keys文件
+		fmt.Printf("  3. 添加所有节点的公钥...\n")
 		for nodeName, publicKey := range nodePublicKeys {
-			// 添加公钥到authorized_keys文件，包括自己的
-			fmt.Printf("  添加节点 %s 的公钥到 %s...\n", nodeName, targetNode.Name)
+			fmt.Printf("    添加节点 %s 的公钥...\n", nodeName)
+			// 使用echo命令添加公钥，确保格式正确
 			cmd := fmt.Sprintf("echo '%s' >> ~/.ssh/authorized_keys", publicKey)
-			_, err = client.RunCommandWithOutput(cmd, outputCallback)
+			_, err = client.RunCommand(cmd)
 			if err != nil {
 				client.Close()
 				return fmt.Errorf("failed to add public key for node %s to %s: %v", nodeName, targetNode.Name, err)
@@ -595,19 +684,31 @@ func (m *SqliteNodeManager) ConfigureSSHPasswdless() error {
 		}
 
 		// 设置authorized_keys文件权限
-		fmt.Printf("  设置 %s 的authorized_keys文件权限...\n", targetNode.Name)
+		fmt.Printf("  4. 设置authorized_keys文件权限...\n")
 		_, err = client.RunCommandWithOutput("chmod 600 ~/.ssh/authorized_keys", outputCallback)
 		if err != nil {
 			client.Close()
 			return fmt.Errorf("failed to set authorized_keys permissions for node %s: %v", targetNode.Name, err)
 		}
 
-		fmt.Printf("  成功配置节点 %s 的SSH免密访问\n", targetNode.Name)
+		// 验证authorized_keys文件内容
+		fmt.Printf("  5. 验证authorized_keys文件...\n")
+		verifyCmd := "echo '=== authorized_keys内容 ===' && wc -l ~/.ssh/authorized_keys && echo '=== 内容结束 ==='"
+		_, err = client.RunCommandWithOutput(verifyCmd, outputCallback)
+		if err != nil {
+			client.Close()
+			return fmt.Errorf("failed to verify authorized_keys content for node %s: %v", targetNode.Name, err)
+		}
+
+		fmt.Printf("  ✓ 节点 %s 配置完成\n", targetNode.Name)
 		client.Close()
 	}
 
-	// 3. 测试节点之间的免密连接
-	fmt.Println("\n=== 测试节点之间的免密连接 ===")
+	// 4. 测试节点之间的免密连接
+	fmt.Println("\n=== 4. 测试节点之间的免密连接 ===")
+	testSuccessCount := 0
+	testTotalCount := 0
+
 	for i, sourceNode := range allNodes {
 		for j, targetNode := range allNodes {
 			// 跳过自己
@@ -615,7 +716,9 @@ func (m *SqliteNodeManager) ConfigureSSHPasswdless() error {
 				continue
 			}
 
-			fmt.Printf("测试从 %s 到 %s 的免密连接...\n", sourceNode.Name, targetNode.Name)
+			testTotalCount++
+			fmt.Printf("\n测试从 %s 到 %s 的免密连接...\n", sourceNode.Name, targetNode.Name)
+
 			// 创建SSH客户端
 			sshConfig := ssh.SSHConfig{
 				Host:       sourceNode.IP,
@@ -627,20 +730,44 @@ func (m *SqliteNodeManager) ConfigureSSHPasswdless() error {
 
 			client, err := ssh.NewSSHClient(sshConfig)
 			if err != nil {
-				return fmt.Errorf("failed to create SSH client for node %s: %v", sourceNode.Name, err)
+				fmt.Printf("  ✗ 创建SSH客户端失败: %v\n", err)
+				continue
 			}
 
-			// 测试免密连接
-			testCmd := fmt.Sprintf("ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 %s@%s 'echo success'", targetNode.Username, targetNode.IP)
-			_, err = client.RunCommandWithOutput(testCmd, outputCallback)
+			// 测试免密连接，使用简单的测试命令
+			testCmd := fmt.Sprintf(
+				"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 %s@%s 'echo success'",
+				targetNode.Username, targetNode.IP,
+			)
+
+			output, err := client.RunCommand(testCmd)
 			client.Close()
 
 			if err != nil {
-				return fmt.Errorf("SSH passwdless test failed from %s to %s: %v", sourceNode.Name, targetNode.Name, err)
+				fmt.Printf("  ✗ 免密连接测试失败\n")
+				fmt.Printf("    错误: %v\n", err)
 			} else {
-				fmt.Printf("✓ 从 %s 到 %s 的免密连接测试成功\n", sourceNode.Name, targetNode.Name)
+				if strings.TrimSpace(output) == "success" {
+					fmt.Printf("  ✓ 免密连接测试成功\n")
+					testSuccessCount++
+				} else {
+					fmt.Printf("  ✗ 免密连接测试失败，输出不符合预期: %s\n", output)
+				}
 			}
 		}
+	}
+
+	// 5. 输出测试结果
+	fmt.Println("\n=== 5. SSH免密互通配置结果 ===")
+	fmt.Printf("测试总数: %d\n", testTotalCount)
+	fmt.Printf("成功数量: %d\n", testSuccessCount)
+	fmt.Printf("失败数量: %d\n", testTotalCount-testSuccessCount)
+
+	if testSuccessCount == testTotalCount {
+		fmt.Println("\n✓ 所有节点之间的SSH免密互通配置成功！")
+	} else {
+		fmt.Printf("\n⚠️  部分节点之间的免密连接测试失败，成功率: %.2f%%\n", float64(testSuccessCount)/float64(testTotalCount)*100)
+		fmt.Println("建议检查失败节点的网络连接、SSH配置和公钥配置")
 	}
 
 	fmt.Println("\n=== 所有节点之间的SSH免密互通配置完成 ===")
@@ -689,7 +816,7 @@ func formatRegMirrors(mirrors []string) string {
 }
 
 // deployMasterNode 部署主节点
-func (m *SqliteNodeManager) deployMasterNode(client *ssh.SSHClient) error {
+func (m *SqliteNodeManager) deployMasterNode(client *ssh.SSHClient, nodeID, nodeName string) error {
 	// 1. 检测操作系统类型
 	distroCmd := `
 if [ -f /etc/os-release ]; then
@@ -963,21 +1090,162 @@ cat /proc/sys/net/ipv4/ip_forward
 }
 
 // deployWorkerNode 部署工作节点
-func (m *SqliteNodeManager) deployWorkerNode(client *ssh.SSHClient) error {
-	// 1. 检测操作系统类型
+func (m *SqliteNodeManager) deployWorkerNode(client *ssh.SSHClient, nodeID, nodeName string) error {
+	// 部署流程：
+	// 1. 环境检查 → 2. 操作系统检测 → 3. 系统准备 → 4. IP转发配置 → 5. 容器运行时安装 → 6. Kubernetes组件安装 → 7. 部署完成验证
+
+	// 记录部署开始日志
+	if m.logManager != nil {
+		startLog := log.LogEntry{
+			NodeID:    nodeID,
+			NodeName:  nodeName,
+			Operation: "部署工作节点",
+			Command:   "部署开始",
+			Output:    "开始执行Kubernetes工作节点部署流程",
+			Status:    "running",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		m.logManager.CreateLog(startLog)
+	}
+
+	fmt.Println("\n" + strings.Repeat("=", 80))
+	fmt.Println("=== Kubernetes工作节点部署流程开始 ===")
+	fmt.Println(strings.Repeat("=", 80) + "\n")
+
+	// 1. 部署前环境检查
+	fmt.Println("=== 步骤1: 部署前环境检查 ===")
+	if m.logManager != nil {
+		stepLog := log.LogEntry{
+			NodeID:    nodeID,
+			NodeName:  nodeName,
+			Operation: "部署工作节点",
+			Command:   "环境检查",
+			Output:    "执行部署前环境检查",
+			Status:    "running",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		m.logManager.CreateLog(stepLog)
+	}
+	envCheckCmd := `
+	# 检查操作系统版本
+	echo "1. 检查操作系统版本..."
+	if [ -f /etc/os-release ]; then
+		. /etc/os-release
+		echo "操作系统: $PRETTY_NAME"
+	elif [ -f /etc/centos-release ]; then
+		echo "操作系统: $(cat /etc/centos-release)"
+	elif [ -f /etc/redhat-release ]; then
+		echo "操作系统: $(cat /etc/redhat-release)"
+	else
+		echo "操作系统: 未知"
+	fi
+
+	# 检查内核版本
+	echo -e "\n2. 检查内核版本..."
+	kernel_version=$(uname -r)
+	echo "内核版本: $kernel_version"
+
+	# 检查CPU核心数
+	echo -e "\n3. 检查CPU核心数..."
+	cpu_cores=$(nproc)
+	echo "CPU核心数: $cpu_cores"
+	if [ "$cpu_cores" -lt 2 ]; then
+		echo "警告: CPU核心数少于2，可能影响Kubernetes性能"
+	fi
+
+	# 检查内存大小
+	echo -e "\n4. 检查内存大小..."
+	mem_total=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+	mem_gb=$(echo "scale=2; $mem_total / 1024 / 1024" | bc)
+	echo "内存大小: ${mem_gb}GB"
+	if (( $(echo "$mem_gb < 2.0" | bc -l) )); then
+		echo "警告: 内存大小少于2GB，可能影响Kubernetes性能"
+	fi
+
+	# 检查网络连接
+	echo -e "\n5. 检查网络连接..."
+	if ping -c 1 8.8.8.8 > /dev/null 2>&1; then
+		echo "网络连接: 正常"
+	else
+		echo "警告: 网络连接异常，可能影响软件安装"
+	fi
+	`
+	envCheckOutput, err := client.RunCommandWithOutput(envCheckCmd, func(line string) {
+		fmt.Println(line) // 实时打印到控制台
+	})
+	if err != nil {
+		fmt.Printf("环境检查执行出现错误: %v\n输出: %s\n", err, envCheckOutput)
+		fmt.Println("警告: 环境检查执行失败，但将继续执行部署...")
+	} else {
+		fmt.Println("环境检查完成")
+	}
+
+	// 2. 检测操作系统类型
+	fmt.Println("\n" + strings.Repeat("-", 80))
+	fmt.Println("=== 步骤2: 检测操作系统类型 ===")
+	if m.logManager != nil {
+		stepLog := log.LogEntry{
+			NodeID:    nodeID,
+			NodeName:  nodeName,
+			Operation: "部署工作节点",
+			Command:   "操作系统检测",
+			Output:    "检测操作系统类型",
+			Status:    "running",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		m.logManager.CreateLog(stepLog)
+	}
 	distroCmd := `
-if [ -f /etc/os-release ]; then
-	. /etc/os-release
-	echo $ID
-fi
-`
+	if [ -f /etc/os-release ]; then
+		. /etc/os-release
+		echo $ID
+	elif [ -f /etc/centos-release ]; then
+		echo "centos"
+	elif [ -f /etc/redhat-release ]; then
+		echo "rhel"
+	elif [ -f /etc/rocky-release ]; then
+		echo "rocky"
+	elif [ -f /etc/almalinux-release ]; then
+		echo "almalinux"
+	elif [ -f /etc/debian_version ]; then
+		echo "debian"
+	else
+		echo "unknown"
+	fi
+	`
 	distroOutput, err := client.RunCommand(distroCmd)
 	if err != nil {
-		return err
+		return fmt.Errorf("检测操作系统类型失败: %v", err)
 	}
 	distro := strings.TrimSpace(distroOutput)
 
-	// 2. 从脚本管理器获取系统准备脚本
+	if distro == "unknown" {
+		return fmt.Errorf("无法识别的操作系统类型，不支持部署Kubernetes工作节点")
+	}
+
+	fmt.Printf("操作系统类型: %s\n", distro)
+
+	// 3. 系统准备
+	fmt.Println("\n" + strings.Repeat("-", 80))
+	fmt.Println("=== 步骤3: 系统准备 ===")
+	if m.logManager != nil {
+		stepLog := log.LogEntry{
+			NodeID:    nodeID,
+			NodeName:  nodeName,
+			Operation: "部署工作节点",
+			Command:   "系统准备",
+			Output:    "执行系统准备操作",
+			Status:    "running",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		m.logManager.CreateLog(stepLog)
+	}
+
+	// 从脚本管理器获取系统准备脚本
 	var systemPrepCmd string
 	var systemPrepFound bool
 	if m.scriptManager != nil {
@@ -990,183 +1258,459 @@ fi
 			if script, scriptFound := scriptGetter.GetScript(systemPrepScriptName); scriptFound {
 				systemPrepCmd = script
 				systemPrepFound = true
-				fmt.Printf("Using custom system prep script for %s\n", distro)
+				fmt.Printf("使用自定义系统准备脚本: %s\n", systemPrepScriptName)
 			} else {
 				// 尝试获取通用系统准备脚本
 				if script, scriptFound := scriptGetter.GetScript("system_prep"); scriptFound {
 					systemPrepCmd = script
 					systemPrepFound = true
-					fmt.Printf("Using custom system prep script\n")
+					fmt.Println("使用通用系统准备脚本")
 				}
 			}
 		}
 	}
 
 	// 执行系统准备脚本（无论是否是自定义脚本）
-	fmt.Println("=== 执行系统准备脚本 ===")
 	if systemPrepFound {
 		systemPrepOutput, err := client.RunCommandWithOutput(systemPrepCmd, func(line string) {
 			fmt.Println(line) // 实时打印到控制台
 		})
 		if err != nil {
-			fmt.Printf("系统准备脚本执行出现错误: %v\n输出: %s\n", err, systemPrepOutput)
-			fmt.Println("警告: 系统准备脚本执行失败，但将继续尝试IP转发配置...")
-			// 不返回错误，继续执行IP转发配置
+			fmt.Printf("自定义系统准备脚本执行失败: %v\n输出: %s\n", err, systemPrepOutput)
+			return fmt.Errorf("系统准备失败: %v", err)
 		} else {
 			fmt.Println("系统准备脚本执行成功")
 		}
 	} else {
-		// 3. 禁用swap
-		fmt.Println("\n=== 执行禁用swap操作 ===")
+		// 执行默认系统准备操作
+		fmt.Println("使用默认系统准备操作")
+
+		// 3.1 禁用swap
+		fmt.Println("\n3.1 执行禁用swap操作...")
 		swapCmd := `
-sudo swapoff -a
-sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
-`
+		sudo swapoff -a
+		sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+		`
 		swapOutput, err := client.RunCommandWithOutput(swapCmd, func(line string) {
 			fmt.Println(line) // 实时打印到控制台
 		})
 		if err != nil {
 			fmt.Printf("禁用swap操作失败: %v\n输出: %s\n", err, swapOutput)
-			fmt.Println("警告: 禁用swap操作失败，但将继续执行...")
-			// 不返回错误，继续执行
+			return fmt.Errorf("禁用swap失败: %v", err)
 		} else {
 			fmt.Println("禁用swap操作成功")
 		}
 
-		// 4. 设置内核参数
-		fmt.Println("\n=== 执行内核参数配置 ===")
+		// 3.2 设置内核参数
+		fmt.Println("\n3.2 执行内核参数配置...")
 		kernelCmd := `
-cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
-net.bridge.bridge-nf-call-iptables  = 1
-net.bridge.bridge-nf-call-ip6tables = 1
-net.ipv4.ip_forward                 = 1
-vm.swappiness                       = 0
-vm.overcommit_memory                = 1
-kernel.panic                        = 10
-kernel.panic_on_oops                = 1
-EOF
-sudo sysctl --system
-sudo modprobe br_netfilter
-sudo modprobe overlay
-`
+		cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+		net.bridge.bridge-nf-call-iptables  = 1
+		net.bridge.bridge-nf-call-ip6tables = 1
+		net.ipv4.ip_forward                 = 1
+		vm.swappiness                       = 0
+		vm.overcommit_memory                = 1
+		kernel.panic                        = 10
+		kernel.panic_on_oops                = 1
+		EOF
+		sudo sysctl --system
+		sudo modprobe br_netfilter
+		sudo modprobe overlay
+		`
 		kernelOutput, err := client.RunCommandWithOutput(kernelCmd, func(line string) {
 			fmt.Println(line) // 实时打印到控制台
 		})
 		if err != nil {
 			fmt.Printf("内核参数配置失败: %v\n输出: %s\n", err, kernelOutput)
-			fmt.Println("警告: 内核参数配置失败，但将继续执行...")
-			// 不返回错误，继续执行
+			return fmt.Errorf("内核参数配置失败: %v", err)
 		} else {
 			fmt.Println("内核参数配置成功")
 		}
 	}
 
+	// 3.3 验证系统准备结果
+	fmt.Println("\n3.3 验证系统准备结果...")
+	sysPrepVerifyCmd := `
+	# 验证swap是否已禁用
+	echo "1. 验证swap是否已禁用..."
+	swap_status=$(swapon --show | wc -l)
+	if [ "$swap_status" -eq 0 ]; then
+		echo "✓ Swap已禁用"
+	else
+		echo "✗ Swap仍在启用"
+		false
+	fi
+
+	# 验证内核模块是否已加载
+	echo -e "\n2. 验证内核模块是否已加载..."
+	br_netfilter_loaded=$(lsmod | grep br_netfilter | wc -l)
+	overlay_loaded=$(lsmod | grep overlay | wc -l)
+	if [ "$br_netfilter_loaded" -gt 0 ] && [ "$overlay_loaded" -gt 0 ]; then
+		echo "✓ 内核模块已加载"
+	else
+		echo "✗ 内核模块未加载"
+		false
+	fi
+	`
+	sysPrepVerifyOutput, err := client.RunCommandWithOutput(sysPrepVerifyCmd, func(line string) {
+		fmt.Println(line) // 实时打印到控制台
+	})
+	if err != nil {
+		fmt.Printf("系统准备结果验证失败: %v\n输出: %s\n", err, sysPrepVerifyOutput)
+		return fmt.Errorf("系统准备验证失败: %v", err)
+	} else {
+		fmt.Println("系统准备结果验证成功")
+	}
+
 	// 添加延迟，确保系统准备完全执行
-	fmt.Println("\n=== 等待5秒，确保系统准备完全执行 ===")
+	fmt.Println("\n等待5秒，确保系统准备完全执行...")
 	if _, err := client.RunCommand("sleep 5"); err != nil {
 		fmt.Printf("等待命令执行失败: %v\n", err)
 	}
 
+	// 4. IP转发配置
+	fmt.Println("\n" + strings.Repeat("-", 80))
+	fmt.Println("=== 步骤4: IP转发配置 ===")
+	if m.logManager != nil {
+		stepLog := log.LogEntry{
+			NodeID:    nodeID,
+			NodeName:  nodeName,
+			Operation: "部署工作节点",
+			Command:   "IP转发配置",
+			Output:    "配置IP转发设置",
+			Status:    "running",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		m.logManager.CreateLog(stepLog)
+	}
+
 	// 确保IP转发配置被正确设置，即使系统准备脚本中已有配置，再单独执行一次确保生效
-	fmt.Println("\n=== 执行IP转发配置脚本 ===")
 	ensureIpForwardCmd := `
-# 确保IP转发配置文件存在并包含正确的配置，使用sudo确保权限
- echo "1. 正在配置IP转发..."
-sudo cat <<EOF > /etc/sysctl.d/99-kubernetes-ipforward.conf
-net.ipv4.ip_forward = 1
-EOF
+	# 确保IP转发配置文件存在并包含正确的配置，使用sudo确保权限
+	echo "1. 正在配置IP转发..."
+	sudo cat <<EOF > /etc/sysctl.d/99-kubernetes-ipforward.conf
+	net.ipv4.ip_forward = 1
+	EOF
 
-# 验证配置文件内容
-echo "2. 验证IP转发配置文件..."
-sudo cat /etc/sysctl.d/99-kubernetes-ipforward.conf
+	# 验证配置文件内容
+	echo "2. 验证IP转发配置文件..."
+	sudo cat /etc/sysctl.d/99-kubernetes-ipforward.conf
 
-# 确保其他Kubernetes所需内核参数配置正确，使用sudo确保权限
-echo "3. 正在配置其他Kubernetes内核参数..."
-sudo cat <<EOF > /etc/sysctl.d/k8s.conf
-net.bridge.bridge-nf-call-iptables = 1
-net.bridge.bridge-nf-call-ip6tables = 1
-EOF
+	# 确保其他Kubernetes所需内核参数配置正确，使用sudo确保权限
+	echo "3. 正在配置其他Kubernetes内核参数..."
+	sudo cat <<EOF > /etc/sysctl.d/k8s.conf
+	net.bridge.bridge-nf-call-iptables = 1
+	net.bridge.bridge-nf-call-ip6tables = 1
+	EOF
 
-# 验证其他内核参数配置文件内容
-echo "4. 验证其他内核参数配置文件..."
-sudo cat /etc/sysctl.d/k8s.conf
+	# 验证其他内核参数配置文件内容
+	echo "4. 验证其他内核参数配置文件..."
+	sudo cat /etc/sysctl.d/k8s.conf
 
-# 加载必要的内核模块，使用sudo确保权限
-echo "5. 正在加载内核模块..."
-sudo modprobe br_netfilter || echo "br_netfilter模块加载失败或已加载"
-sudo modprobe overlay || echo "overlay模块加载失败或已加载"
+	# 加载必要的内核模块，使用sudo确保权限
+	echo "5. 正在加载内核模块..."
+	sudo modprobe br_netfilter || echo "br_netfilter模块加载失败或已加载"
+	sudo modprobe overlay || echo "overlay模块加载失败或已加载"
 
-# 应用所有内核参数，使用sudo确保权限
-echo "6. 正在应用内核参数..."
-sudo sysctl --system
+	# 应用所有内核参数，使用sudo确保权限
+	echo "6. 正在应用内核参数..."
+	sudo sysctl --system
 
-# 立即验证IP转发是否生效
-echo "7. 验证IP转发状态..."
-current_ip_forward=$(sudo sysctl -n net.ipv4.ip_forward)
-echo "当前IP转发值: $current_ip_forward"
+	# 立即验证IP转发是否生效
+	echo "7. 验证IP转发状态..."
+	current_ip_forward=$(sudo sysctl -n net.ipv4.ip_forward)
+	echo "当前IP转发值: $current_ip_forward"
 
-# 如果IP转发未启用，直接通过sysctl命令设置
-echo "8. 确保IP转发即时生效..."
-sudo sysctl -w net.ipv4.ip_forward=1
-sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
-sudo sysctl -w net.bridge.bridge-nf-call-ip6tables=1
+	# 如果IP转发未启用，直接通过sysctl命令设置
+	echo "8. 确保IP转发即时生效..."
+	sudo sysctl -w net.ipv4.ip_forward=1
+	sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
+	sudo sysctl -w net.bridge.bridge-nf-call-ip6tables=1
 
-# 再次验证最终状态
-echo "9. 最终验证IP转发状态..."
-final_ip_forward=$(sudo sysctl -n net.ipv4.ip_forward)
-echo "最终IP转发值: $final_ip_forward"
+	# 再次验证最终状态
+	echo "9. 最终验证IP转发状态..."
+	final_ip_forward=$(sudo sysctl -n net.ipv4.ip_forward)
+	echo "最终IP转发值: $final_ip_forward"
 
-# 检查/proc/sys/net/ipv4/ip_forward文件内容
-echo "10. 检查/proc/sys/net/ipv4/ip_forward文件内容..."
-cat /proc/sys/net/ipv4/ip_forward
-`
+	# 检查/proc/sys/net/ipv4/ip_forward文件内容
+	echo "10. 检查/proc/sys/net/ipv4/ip_forward文件内容..."
+	cat /proc/sys/net/ipv4/ip_forward
+	`
 	ensureIpForwardOutput, err := client.RunCommandWithOutput(ensureIpForwardCmd, func(line string) {
 		fmt.Println(line) // 实时打印到控制台
 	})
 	if err != nil {
-		fmt.Printf("IP转发配置脚本执行出现错误: %v\n输出: %s\n", err, ensureIpForwardOutput)
-		fmt.Println("警告: IP转发配置脚本执行失败，但将继续执行...")
-		// 不返回错误，继续执行
+		fmt.Printf("IP转发配置脚本执行失败: %v\n输出: %s\n", err, ensureIpForwardOutput)
+		return fmt.Errorf("IP转发配置失败: %v", err)
 	} else {
 		fmt.Println("IP转发配置脚本执行成功")
 	}
 
 	// 添加延迟，确保IP转发配置完全生效
-	fmt.Println("\n=== 等待3秒，确保IP转发配置完全生效 ===")
+	fmt.Println("\n等待3秒，确保IP转发配置完全生效...")
 	if _, err := client.RunCommand("sleep 3"); err != nil {
 		fmt.Printf("等待命令执行失败: %v\n", err)
 	}
 
-	// 最终验证IP转发状态
-	fmt.Println("\n=== 最终验证IP转发状态 ===")
+	// 4.1 最终验证IP转发状态
+	fmt.Println("\n4.1 最终验证IP转发状态...")
 	finalCheckCmd := `
-# 最终验证IP转发状态
-final_ip_forward=$(sudo sysctl -n net.ipv4.ip_forward)
-echo "最终IP转发值: $final_ip_forward"
-
-# 检查/proc/sys/net/ipv4/ip_forward文件内容
-echo "=== 检查/proc/sys/net/ipv4/ip_forward文件内容 ==="
-cat /proc/sys/net/ipv4/ip_forward
-`
+	# 最终验证IP转发状态
+	final_ip_forward=$(sudo sysctl -n net.ipv4.ip_forward)
+	echo "最终IP转发值: $final_ip_forward"
+	
+	# 检查/proc/sys/net/ipv4/ip_forward文件内容
+	echo "=== 检查/proc/sys/net/ipv4/ip_forward文件内容 ==="
+	proc_ip_forward=$(cat /proc/sys/net/ipv4/ip_forward)
+	echo "文件内容: $proc_ip_forward"
+	
+	# 验证IP转发是否已启用
+	if [ "$final_ip_forward" -eq 1 ] && [ "$proc_ip_forward" -eq 1 ]; then
+		echo "✓ IP转发已成功启用"
+	else
+		echo "✗ IP转发未成功启用"
+		false
+	fi
+	`
 	finalCheckOutput, err := client.RunCommandWithOutput(finalCheckCmd, func(line string) {
 		fmt.Println(line) // 实时打印到控制台
 	})
 	if err != nil {
-		fmt.Printf("最终IP转发验证失败: %v\n输出: %s\n", err, finalCheckOutput)
-		// 不返回错误，继续执行
+		fmt.Printf("IP转发最终验证失败: %v\n输出: %s\n", err, finalCheckOutput)
+		return fmt.Errorf("IP转发验证失败: %v", err)
 	} else {
-		fmt.Println("最终IP转发验证完成")
+		fmt.Println("IP转发最终验证成功")
 	}
 
 	// 5. 设置容器运行时
+	fmt.Println("\n" + strings.Repeat("-", 80))
+	fmt.Println("=== 步骤5: 容器运行时安装 ===")
+	if m.logManager != nil {
+		stepLog := log.LogEntry{
+			NodeID:    nodeID,
+			NodeName:  nodeName,
+			Operation: "部署工作节点",
+			Command:   "容器运行时安装",
+			Output:    "安装containerd容器运行时",
+			Status:    "running",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		m.logManager.CreateLog(stepLog)
+	}
 	containerRuntime := "containerd"
 	if err := m.installContainerRuntime(client, distro, containerRuntime); err != nil {
+		if m.logManager != nil {
+			failLog := log.LogEntry{
+				NodeID:    nodeID,
+				NodeName:  nodeName,
+				Operation: "部署工作节点",
+				Command:   "容器运行时安装",
+				Output:    fmt.Sprintf("容器运行时安装失败: %v", err),
+				Status:    "failed",
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+			m.logManager.CreateLog(failLog)
+		}
 		return err
+	}
+	if m.logManager != nil {
+		successLog := log.LogEntry{
+			NodeID:    nodeID,
+			NodeName:  nodeName,
+			Operation: "部署工作节点",
+			Command:   "容器运行时安装",
+			Output:    "containerd容器运行时安装成功",
+			Status:    "success",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		m.logManager.CreateLog(successLog)
 	}
 
 	// 6. 安装kubeadm和kubelet
+	fmt.Println("\n" + strings.Repeat("-", 80))
+	fmt.Println("=== 步骤6: Kubernetes组件安装 ===")
+	if m.logManager != nil {
+		stepLog := log.LogEntry{
+			NodeID:    nodeID,
+			NodeName:  nodeName,
+			Operation: "部署工作节点",
+			Command:   "Kubernetes组件安装",
+			Output:    "安装kubeadm、kubelet和kubectl",
+			Status:    "running",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		m.logManager.CreateLog(stepLog)
+	}
 	if err := m.installKubernetesComponents(client, distro); err != nil {
+		if m.logManager != nil {
+			failLog := log.LogEntry{
+				NodeID:    nodeID,
+				NodeName:  nodeName,
+				Operation: "部署工作节点",
+				Command:   "Kubernetes组件安装",
+				Output:    fmt.Sprintf("Kubernetes组件安装失败: %v", err),
+				Status:    "failed",
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+			m.logManager.CreateLog(failLog)
+		}
 		return err
+	}
+	if m.logManager != nil {
+		successLog := log.LogEntry{
+			NodeID:    nodeID,
+			NodeName:  nodeName,
+			Operation: "部署工作节点",
+			Command:   "Kubernetes组件安装",
+			Output:    "Kubernetes组件安装成功",
+			Status:    "success",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		m.logManager.CreateLog(successLog)
+	}
+
+	// 7. 部署完成验证
+	fmt.Println("\n" + strings.Repeat("-", 80))
+	fmt.Println("=== 步骤7: 部署完成验证 ===")
+	if m.logManager != nil {
+		stepLog := log.LogEntry{
+			NodeID:    nodeID,
+			NodeName:  nodeName,
+			Operation: "部署工作节点",
+			Command:   "部署完成验证",
+			Output:    "验证部署完成情况",
+			Status:    "running",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		m.logManager.CreateLog(stepLog)
+	}
+	finalVerifyCmd := `
+	// 验证容器运行时状态
+	echo "1. 验证容器运行时状态..."
+	if systemctl is-active --quiet containerd; then
+		echo "✓ containerd运行正常"
+	else
+		echo "✗ containerd运行异常"
+		false
+	fi
+
+	// 验证kubelet状态
+	echo -e "\n2. 验证kubelet状态..."
+	if systemctl is-active --quiet kubelet; then
+		echo "✓ kubelet运行正常"
+	else
+		echo "✗ kubelet运行异常"
+		false
+	fi
+
+	// 验证kubeadm命令是否可用
+	echo -e "\n3. 验证kubeadm命令..."
+	if command -v kubeadm &> /dev/null; then
+		kubeadm_version=$(kubeadm version --short 2>&1)
+		echo "✓ kubeadm已安装: $kubeadm_version"
+	else
+		echo "✗ kubeadm未安装"
+		false
+	fi
+
+	// 验证kubectl命令是否可用
+	echo -e "\n4. 验证kubectl命令..."
+	if command -v kubectl &> /dev/null; then
+		kubectl_version=$(kubectl version --short 2>&1 | grep -i client)
+		echo "✓ kubectl已安装: $kubectl_version"
+	else
+		echo "✗ kubectl未安装"
+		false
+	fi
+
+	// 验证系统状态
+	echo -e "\n5. 验证系统状态..."
+	final_ip_forward=$(sudo sysctl -n net.ipv4.ip_forward)
+	if [ "$final_ip_forward" -eq 1 ]; then
+		echo "✓ IP转发已启用"
+	else
+		echo "✗ IP转发未启用"
+		false
+	fi
+
+	// 验证swap是否已禁用
+	echo -e "\n6. 验证swap状态..."
+	swap_status=$(swapon --show | wc -l)
+	if [ "$swap_status" -eq 0 ]; then
+		echo "✓ Swap已禁用"
+	else
+		echo "✗ Swap仍在启用"
+		false
+	fi
+	`
+	finalVerifyOutput, err := client.RunCommandWithOutput(finalVerifyCmd, func(line string) {
+		fmt.Println(line) // 实时打印到控制台
+	})
+	if err != nil {
+		fmt.Printf("部署完成验证失败: %v\n输出: %s\n", err, finalVerifyOutput)
+		if m.logManager != nil {
+			failLog := log.LogEntry{
+				NodeID:    nodeID,
+				NodeName:  nodeName,
+				Operation: "部署工作节点",
+				Command:   "部署完成验证",
+				Output:    fmt.Sprintf("部署完成验证失败: %v", err),
+				Status:    "failed",
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+			m.logManager.CreateLog(failLog)
+			// 记录部署失败最终日志
+			finalFailLog := log.LogEntry{
+				NodeID:    nodeID,
+				NodeName:  nodeName,
+				Operation: "部署工作节点",
+				Command:   "部署结束",
+				Output:    "Kubernetes工作节点部署失败",
+				Status:    "failed",
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+			m.logManager.CreateLog(finalFailLog)
+		}
+		return fmt.Errorf("部署完成验证失败: %v", err)
+	} else {
+		fmt.Println("\n" + strings.Repeat("=", 80))
+		fmt.Println("=== Kubernetes工作节点部署完成! ===")
+		fmt.Println(strings.Repeat("=", 80))
+		if m.logManager != nil {
+			successLog := log.LogEntry{
+				NodeID:    nodeID,
+				NodeName:  nodeName,
+				Operation: "部署工作节点",
+				Command:   "部署完成验证",
+				Output:    "部署完成验证成功",
+				Status:    "success",
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+			m.logManager.CreateLog(successLog)
+			// 记录部署成功最终日志
+			finalSuccessLog := log.LogEntry{
+				NodeID:    nodeID,
+				NodeName:  nodeName,
+				Operation: "部署工作节点",
+				Command:   "部署结束",
+				Output:    "Kubernetes工作节点部署成功",
+				Status:    "success",
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+			m.logManager.CreateLog(finalSuccessLog)
+		}
 	}
 
 	return nil
@@ -1202,7 +1746,7 @@ func (m *SqliteNodeManager) installContainerRuntime(client *ssh.SSHClient, distr
 					if script, scriptFound := scriptGetter.GetScript(runtime); scriptFound {
 						cmd = script
 						found = true
-						fmt.Printf("Using custom script for container runtime installation\n", runtime)
+						fmt.Printf("Using custom script for container runtime installation: %v\n", runtime)
 					}
 				}
 			}
@@ -1267,6 +1811,35 @@ func (m *SqliteNodeManager) installContainerRuntime(client *ssh.SSHClient, distr
 
 	if _, err := client.RunCommand(cmd); err != nil {
 		return err
+	}
+
+	// 验证容器运行时安装
+	verifyCmd := `
+	// 验证容器运行时命令是否可用
+	echo "验证容器运行时命令..."
+	if command -v containerd &> /dev/null; then
+		containerd_version=$(containerd --version 2>&1 | head -n 1)
+		echo "✓ containerd已安装: $containerd_version"
+	else
+		echo "✗ containerd未安装"
+		false
+	fi
+
+	// 验证containerd状态
+	echo -e "\n验证containerd状态..."
+	if systemctl is-active --quiet containerd; then
+		echo "✓ containerd运行正常"
+	else
+		echo "✗ containerd运行异常"
+		false
+	fi
+	`
+	verifyOutput, err := client.RunCommandWithOutput(verifyCmd, func(line string) {
+		fmt.Println(line) // 实时打印到控制台
+	})
+	if err != nil {
+		fmt.Printf("容器运行时验证失败: %v\n输出: %s\n", err, verifyOutput)
+		return fmt.Errorf("容器运行时验证失败: %v", err)
 	}
 
 	return nil
@@ -1464,6 +2037,54 @@ func (m *SqliteNodeManager) installKubernetesComponents(client *ssh.SSHClient, d
 
 	if err != nil {
 		return err
+	}
+
+	// 验证Kubernetes组件安装
+	k8sVerifyCmd := `
+	// 验证kubelet状态
+	echo "1. 验证kubelet状态..."
+	if systemctl is-active --quiet kubelet; then
+		echo "✓ kubelet运行正常"
+	else
+		echo "✗ kubelet运行异常"
+		false
+	fi
+
+	// 验证kubeadm命令是否可用
+	echo -e "\n2. 验证kubeadm命令..."
+	if command -v kubeadm &> /dev/null; then
+		kubeadm_version=$(kubeadm version --short 2>&1)
+		echo "✓ kubeadm已安装: $kubeadm_version"
+	else
+		echo "✗ kubeadm未安装"
+		false
+	fi
+
+	// 验证kubectl命令是否可用
+	echo -e "\n3. 验证kubectl命令..."
+	if command -v kubectl &> /dev/null; then
+		kubectl_version=$(kubectl version --short 2>&1 | grep -i client)
+		echo "✓ kubectl已安装: $kubectl_version"
+	else
+		echo "✗ kubectl未安装"
+		false
+	fi
+
+	// 验证kubelet已启用
+	echo -e "\n4. 验证kubelet是否已启用..."
+	if systemctl is-enabled --quiet kubelet; then
+		echo "✓ kubelet已设置为开机自启"
+	else
+		echo "✗ kubelet未设置为开机自启"
+		false
+	fi
+	`
+	k8sVerifyOutput, err := client.RunCommandWithOutput(k8sVerifyCmd, func(line string) {
+		fmt.Println(line) // 实时打印到控制台
+	})
+	if err != nil {
+		fmt.Printf("Kubernetes组件验证失败: %v\n输出: %s\n", err, k8sVerifyOutput)
+		return fmt.Errorf("Kubernetes组件验证失败: %v", err)
 	}
 
 	return nil
